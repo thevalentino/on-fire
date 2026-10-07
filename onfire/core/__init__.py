@@ -10,8 +10,11 @@ from onfire.core.calibrations import (
     combine_flats,
     normalize_flat,
 )
+from onfire.core.coadd import CoaddedSpectrum, coadd_order_spectra
 from onfire.core.engines import (
     calibrate_wavelengths,
+    coadd_orders,
+    extinction_correct,
     extract_1d,
     find_objects,
     fit_tilts,
@@ -22,6 +25,13 @@ from onfire.core.engines import (
     subtract_sky,
     telluric_correct,
     trace_orders,
+)
+from onfire.core.extinction import (
+    RV_DEFAULT,
+    deredden_spectrum,
+    extinction_factor,
+    fitzpatrick99,
+    query_ebv,
 )
 from onfire.core.extract import (
     BoxcarExtraction,
@@ -109,6 +119,7 @@ register_engines()
 __all__ = [
     "BSplineBasis",
     "BoxcarExtraction",
+    "CoaddedSpectrum",
     "FIRE_NORDERS",
     "FIRE_ORDER_NUMBERS",
     "FIRE_ORDER_SPAT_POS",
@@ -116,6 +127,7 @@ __all__ = [
     "OptimalExtraction",
     "PolynomialFit",
     "ProfileFit",
+    "RV_DEFAULT",
     "SensitivityFunction",
     "SkyFit",
     "TelluricCorrection",
@@ -128,6 +140,8 @@ __all__ = [
     "build_tilt_fit",
     "boxcar_extract",
     "calibrate_wavelengths",
+    "coadd_order_spectra",
+    "coadd_orders",
     "collapse_object_profile",
     "collapse_profile",
     "combine_flats",
@@ -135,6 +149,7 @@ __all__ = [
     "compute_zeropoint",
     "counts_to_nlam",
     "delta_wave",
+    "deredden_spectrum",
     "derive_sensitivity",
     "detect_lines",
     "detect_order_edges",
@@ -144,6 +159,8 @@ __all__ = [
     "evaluate_trace",
     "evaluate_wavelength_solution",
     "evaluate_wavelength_surface",
+    "extinction_correct",
+    "extinction_factor",
     "extract_1d",
     "find_objects",
     "find_profile_peaks",
@@ -159,6 +176,7 @@ __all__ = [
     "fit_trace",
     "fit_wavelength_solution",
     "fit_wavelength_surface",
+    "fitzpatrick99",
     "flat_field",
     "flux_calibrate",
     "frame_variance",
@@ -170,6 +188,7 @@ __all__ = [
     "prep_calibrations",
     "process_science",
     "profile_snr",
+    "query_ebv",
     "rectify_order",
     "register_engines",
     "regularize_tilt_fit",

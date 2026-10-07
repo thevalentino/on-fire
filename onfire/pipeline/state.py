@@ -237,6 +237,33 @@ class ReductionState:
         self.add_plot("telluric_comparison", figure)
         return figure
 
+    def resolve_call_params(
+        self,
+        step: str | int,
+        *,
+        params: Optional[dict[str, Any]] = None,
+        order: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Return the effective parameters a step would be called with.
+
+        The Parameter Config seeds the call (top-level control keys, then the
+        step-specific ``steps.<name>`` block), explicit ``params`` override it,
+        and a targeted ``order`` is added last. Pipeline-control keys
+        (``steps``, ``qa_dir``, ``frames``, ``output_dir``) are not algorithm
+        inputs and are never forwarded.
+        """
+        name = step if isinstance(step, str) else step_name(step)
+        call_params: dict[str, Any] = {
+            key: value
+            for key, value in self.config.items()
+            if key not in ("steps", "qa_dir", "frames", "output_dir")
+        }
+        call_params.update(self.config.get("steps", {}).get(name, {}) or {})
+        call_params.update(params or {})
+        if order is not None:
+            call_params.setdefault("order", order)
+        return call_params
+
     def run_step(
         self,
         step: str | int,
@@ -264,19 +291,7 @@ class ReductionState:
         ordinal = step_ordinal(name)
         engine = get_step_engine(name)
 
-        # Layer the Parameter Config under the explicit overrides: top-level
-        # control keys and per-step ``steps.<name>`` values seed the call, then
-        # ``params`` wins. ``steps``/``qa_dir`` are pipeline control, not
-        # algorithm inputs, so they are not forwarded.
-        call_params: dict[str, Any] = {
-            key: value
-            for key, value in self.config.items()
-            if key not in ("steps", "qa_dir")
-        }
-        call_params.update(self.config.get("steps", {}).get(name, {}) or {})
-        call_params.update(params or {})
-        if order is not None:
-            call_params.setdefault("order", order)
+        call_params = self.resolve_call_params(step, params=params, order=order)
 
         target = self.clone() if clone else self
         result = engine(target.products, target.meta, call_params)

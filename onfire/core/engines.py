@@ -19,6 +19,8 @@ from onfire.core.calibrations import (
     combine_flats,
     normalize_flat,
 )
+from onfire.core.coadd import coadd_order_spectra
+from onfire.core.extinction import RV_DEFAULT, deredden_spectrum, query_ebv
 from onfire.core.extract import (
     boxcar_extract,
     build_profile_image,
@@ -2919,8 +2921,242 @@ def telluric_correct(
     )
 
 
+def _coadd_figure(coadd: Any) -> go.Figure:
+    """Plot the coadded spectrum and its propagated uncertainty."""
+    wave = np.asarray(coadd.wave, dtype=float)
+    flux = np.asarray(coadd.flux, dtype=float)
+    sigma = np.sqrt(np.clip(np.asarray(coadd.var, dtype=float), 0.0, None))
+    figure = go.Figure()
+    figure.add_trace(
+        go.Scatter(
+            x=wave,
+            y=sigma,
+            mode="lines",
+            line={"color": "rgba(120,120,120,0.5)"},
+            name="uncertainty",
+        )
+    )
+    figure.add_trace(
+        go.Scatter(x=wave, y=flux, mode="lines", name="coadded")
+    )
+    figure.update_layout(
+        title="Coadded 1D spectrum",
+        xaxis_title="wavelength (Angstrom)",
+        yaxis_title="flux (erg/s/cm2/A)",
+    )
+    return figure
+
+
+def _select_order_object(
+    objects: Table,
+    *,
+    obj_id: int | None,
+) -> dict[int, int]:
+    """Map order number to the best (highest S/N) object column for coaddition."""
+    orders = np.asarray(objects["order"], dtype=int)
+    if "snr" in objects.colnames:
+        snr = np.asarray(objects["snr"], dtype=float)
+    else:
+        snr = np.ones(len(objects), dtype=float)
+    if obj_id is not None and "obj_id" in objects.colnames:
+        candidates = np.where(np.asarray(objects["obj_id"], dtype=int) == int(obj_id))[0]
+    else:
+        candidates = np.arange(len(objects))
+    best: dict[int, int] = {}
+    for column in candidates:
+        order = int(orders[column])
+        if order not in best or snr[column] > snr[best[order]]:
+            best[order] = int(column)
+    return best
+
+
+def coadd_orders(
+    products: dict[str, Any],
+    meta: dict[str, Any],
+    params: dict[str, Any],
+) -> StepResult:
+    """Splice and coadd overlapping calibrated orders (reduction step 11).
+
+    The best object of every order (highest S/N, or the one matching
+    ``params['obj_id']``) is taken from the telluric-corrected spectra when
+    available and otherwise from the flux-calibrated spectra, then combined into
+    a single continuous 1D spectrum spanning the full FIRE range.
+
+    Args:
+        products: State products. Requires ``wave_soln``, ``objects`` and a
+            flux-calibrated spectra product (``telluric_flux``/``flux``).
+        meta: State metadata (unused).
+        params: Algorithmic parameters, including an optional ``obj_id`` target.
+
+    Returns:
+        A :class:`StepResult` with the 1D ``coadd_*`` products and a QA figure.
+    """
+    wave_soln = products.get("wave_soln")
+    objects = products.get("objects")
+    if wave_soln is None or objects is None:
+        raise ValueError(
+            "coadd_orders requires 'wave_soln' and 'objects' products; "
+            "run calibrate_wavelengths and find_objects first"
+        )
+    flux = products.get("telluric_flux")
+    flux_var = products.get("telluric_var")
+    flux_mask = products.get("telluric_mask")
+    if flux is None:
+        flux = products.get("flux")
+        flux_var = products.get("flux_var")
+        flux_mask = products.get("flux_mask")
+    if flux is None:
+        raise ValueError(
+            "coadd_orders requires a flux-calibrated spectra product "
+            "('telluric_flux' or 'flux'); run flux_calibrate first"
+        )
+    wave_soln = np.asarray(wave_soln, dtype=float)
+    flux = np.asarray(flux, dtype=float)
+    flux_var = (
+        np.asarray(flux_var, dtype=float) if flux_var is not None else None
+    )
+    flux_mask = (
+        np.asarray(flux_mask, dtype=bool) if flux_mask is not None else None
+    )
+
+    obj_id = params.get("obj_id")
+    obj_id = int(obj_id) if obj_id is not None else None
+    selected = _select_order_object(objects, obj_id=obj_id)
+
+    waves: list[np.ndarray] = []
+    fluxes: list[np.ndarray] = []
+    variances: list[np.ndarray] = []
+    masks: list[np.ndarray] = []
+    contributing: set[int] = set()
+    for index, order in enumerate(FIRE_ORDER_NUMBERS):
+        order = int(order)
+        column = selected.get(order)
+        if column is None:
+            continue
+        wave = wave_soln[:, index]
+        segment_flux = flux[:, column]
+        if not np.any(np.isfinite(segment_flux)):
+            continue
+        waves.append(wave)
+        fluxes.append(segment_flux)
+        if flux_var is not None:
+            variances.append(flux_var[:, column])
+        if flux_mask is not None:
+            masks.append(flux_mask[:, column])
+        contributing.add(order)
+
+    coadd = coadd_order_spectra(
+        waves,
+        fluxes,
+        variances if flux_var is not None else None,
+        masks if flux_mask is not None else None,
+    )
+    figure = _coadd_figure(coadd)
+    return StepResult(
+        products={
+            "coadd_wave": coadd.wave,
+            "coadd_flux": coadd.flux,
+            "coadd_var": coadd.var,
+            "coadd_ivar": coadd.ivar,
+            "coadd_mask": coadd.mask,
+        },
+        meta={
+            "n_coadd_orders": len(contributing),
+            "n_coadd_points": int(coadd.npoints),
+            "coadd_obj_id": obj_id,
+        },
+        plots={"coadd_orders": figure},
+    )
+
+
+def _extinction_figure(wave: np.ndarray, intrinsic: np.ndarray, observed: np.ndarray) -> go.Figure:
+    """Plot the dereddened spectrum over the observed input."""
+    figure = go.Figure()
+    figure.add_trace(
+        go.Scatter(x=wave, y=observed, mode="lines", name="observed")
+    )
+    figure.add_trace(
+        go.Scatter(x=wave, y=intrinsic, mode="lines", name="dereddened")
+    )
+    figure.update_layout(
+        title="Galactic dust extinction correction",
+        xaxis_title="wavelength (Angstrom)",
+        yaxis_title="flux (erg/s/cm2/A)",
+    )
+    return figure
+
+
+def extinction_correct(
+    products: dict[str, Any],
+    meta: dict[str, Any],
+    params: dict[str, Any],
+) -> StepResult:
+    """Correct the coadded spectrum for Milky Way dust extinction (step 12).
+
+    The colour excess ``E(B-V)`` is taken from the explicit ``ebv`` Parameter
+    Config override when present, and otherwise queried from a local dust map
+    (``dust_map`` product) at the target coordinates. The Fitzpatrick (1999)
+    law dereddens the flux to intrinsic astrophysical values.
+
+    Args:
+        products: State products. Requires the ``coadd_wave``/``coadd_flux``
+            products produced by :func:`coadd_orders`.
+        meta: State metadata; may carry ``ra``/``dec`` coordinates.
+        params: Algorithmic parameters: ``ebv``, ``rv``, ``ra``, ``dec``.
+
+    Returns:
+        A :class:`StepResult` with the ``final_*`` intrinsic spectrum products.
+    """
+    wave = products.get("coadd_wave")
+    flux = products.get("coadd_flux")
+    if wave is None or flux is None:
+        raise ValueError(
+            "extinction_correct requires 'coadd_wave' and 'coadd_flux' products; "
+            "run coadd_orders first"
+        )
+    wave = np.asarray(wave, dtype=float)
+    flux = np.asarray(flux, dtype=float)
+    variance = products.get("coadd_var")
+    variance = np.asarray(variance, dtype=float) if variance is not None else None
+
+    ebv = params.get("ebv")
+    if ebv is None:
+        ra = params.get("ra", meta.get("ra"))
+        dec = params.get("dec", meta.get("dec"))
+        catalog = products.get("dust_map")
+        if ra is None or dec is None:
+            raise ValueError(
+                "extinction_correct needs an 'ebv' override or 'ra'/'dec' "
+                "coordinates to query the dust map"
+            )
+        ebv = query_ebv(float(ra), float(dec), catalog=catalog)
+    ebv = float(ebv)
+    rv = float(params.get("rv", RV_DEFAULT))
+
+    intrinsic, out_var, out_ivar, mask = deredden_spectrum(
+        wave, flux, ebv, rv=rv, variance=variance
+    )
+    figure = _extinction_figure(wave, intrinsic, flux)
+    n_points = int(np.asarray(mask, dtype=bool).sum())
+    return StepResult(
+        products={
+            "final_wave": wave,
+            "final_flux": intrinsic,
+            "final_var": out_var if out_var is not None else np.full_like(flux, np.nan),
+            "final_ivar": out_ivar if out_ivar is not None else np.zeros_like(flux),
+            "final_mask": np.asarray(mask, dtype=bool),
+        },
+        meta={
+            "ebv": ebv,
+            "rv": rv,
+            "n_extinction_points": n_points,
+        },
+        plots={"extinction_correct": figure},
+    )
+
+
 def register_engines() -> None:
-    """Register the implemented Step Engines (reduction steps 1-10)."""
+    """Register the implemented Step Engines (reduction steps 1-12)."""
     register_step_engine("prep_calibrations", prep_calibrations)
     register_step_engine("trace_orders", trace_orders)
     register_step_engine("calibrate_wavelengths", calibrate_wavelengths)
@@ -2931,3 +3167,5 @@ def register_engines() -> None:
     register_step_engine("extract_1d", extract_1d)
     register_step_engine("flux_calibrate", flux_calibrate)
     register_step_engine("telluric_correct", telluric_correct)
+    register_step_engine("coadd_orders", coadd_orders)
+    register_step_engine("extinction_correct", extinction_correct)

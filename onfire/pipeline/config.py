@@ -16,6 +16,8 @@ import yaml
 # Pipeline defaults applied before any user YAML overrides.
 DEFAULT_CONFIG: dict[str, Any] = {
     "mode": "pair_difference",
+    "frames": "frames.ascii",
+    "output_dir": "checkpoints",
     "qa_dir": "qa",
     "steps": {},
 }
