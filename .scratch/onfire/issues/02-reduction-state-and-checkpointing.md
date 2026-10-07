@@ -7,9 +7,9 @@ The core state management container (`ReductionState`) that serves as the centra
 
 **Status:** ready-for-agent
 
-- [ ] `ReductionState` initializes from an input Frame Table and YAML Parameter Config.
-- [ ] Supports executing steps in-place or returning an isolated State Clone (`clone=True`).
-- [ ] Persists intermediate data arrays, masks, and metadata to Multi-Extension FITS checkpoints with step prefixes (e.g. `01_...fits`).
-- [ ] Reloads previously saved checkpoints into `ReductionState` without information loss.
-- [ ] Attaches Plotly `Figure` objects to `state.plots` and supports saving standalone HTML QA files.
-- [ ] High-level tests verify state mutation, cloning independence, and FITS save/load roundtripping.
+- [x] `ReductionState` initializes from an input Frame Table and YAML Parameter Config.
+- [x] Supports executing steps in-place or returning an isolated State Clone (`clone=True`).
+- [x] Persists intermediate data arrays, masks, and metadata to Multi-Extension FITS checkpoints with step prefixes (e.g. `01_...fits`).
+- [x] Reloads previously saved checkpoints into `ReductionState` without information loss.
+- [x] Attaches Plotly `Figure` objects to `state.plots` and supports saving standalone HTML QA files.
+- [x] High-level tests verify state mutation, cloning independence, and FITS save/load roundtripping.
