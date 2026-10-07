@@ -98,6 +98,25 @@ class ReductionState:
             source=str(frames_path),
         )
 
+    def load_raw_frames(
+        self, roles: Optional[list[str]] = None
+    ) -> dict[str, Any]:
+        """Read raw exposures listed in the Frame Table into :attr:`products`.
+
+        Raw FITS reading lives in the persistence tier; the resulting stacks are
+        stored under keys like ``raw_flats`` for the Step Engines to consume.
+
+        Args:
+            roles: Frame Table roles to load (e.g. ``["pixelflat"]``). When
+                ``None``, every known role is attempted.
+
+        Returns:
+            The mapping of product key to stacked raw array that was loaded.
+        """
+        from onfire.pipeline.raw import read_raw_frames
+
+        return read_raw_frames(self, roles)
+
     @property
     def step_name(self) -> str:
         """Name of the last completed reduction step, or '' if none."""

@@ -7,9 +7,9 @@ Implementation of the first two canonical reduction steps: calibration frame pre
 
 **Status:** ready-for-agent
 
-- [ ] Combines raw flat exposures and constructs bad pixel masks (`prep_calibrations`).
-- [ ] Traces left and right spatial edges across detector dispersion for orders 11 through 31 (`trace_orders`).
-- [ ] Supports re-running edge tracing on an individual order (e.g. order 13) in interactive mode.
-- [ ] Emits intermediate FITS checkpoints for calibration products and order edge trace sets.
-- [ ] Generates interactive Plotly QA figures displaying detector images with overlaid order traces.
-- [ ] High-level tests verify flat combination, order detection, and trace model outputs.
+- [x] Combines raw flat exposures and constructs bad pixel masks (`prep_calibrations`).
+- [x] Traces left and right spatial edges across detector dispersion for orders 11 through 31 (`trace_orders`).
+- [x] Supports re-running edge tracing on an individual order (e.g. order 13) in interactive mode.
+- [x] Emits intermediate FITS checkpoints for calibration products and order edge trace sets.
+- [x] Generates interactive Plotly QA figures displaying detector images with overlaid order traces.
+- [x] High-level tests verify flat combination, order detection, and trace model outputs.
