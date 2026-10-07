@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Iterable, Optional
 import numpy as np
 from astropy.table import Table
 
+from onfire.core.fire import FIRE_ORDER_NUMBERS
 from onfire.setup.table import FrameTable
 
 from onfire.pipeline.config import load_config
@@ -134,26 +135,82 @@ class StaleMarks:
         )
 
 
+@dataclass(frozen=True)
+class ProductProvenance:
+    """Which step produced a product and, where it has one, its order axis.
+
+    ``orders`` lists the echelle orders a product carries, in the same order as
+    they appear along its order axis (or its ``order`` column). ``None`` marks a
+    product with no order axis -- whole-state data discarded whole when Stale.
+    """
+
+    step: int
+    orders: Optional[tuple[int, ...]] = None
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "step": self.step,
+            "orders": None if self.orders is None else list(self.orders),
+        }
+
+    @classmethod
+    def from_json(cls, data: Any) -> "ProductProvenance":
+        """Rebuild from checkpoint JSON.
+
+        A bare integer is the legacy record shape and carries no order axis, so
+        it loads as a whole-state product.
+        """
+        if isinstance(data, int):
+            return cls(step=int(data))
+        orders = data.get("orders")
+        return cls(
+            step=int(data["step"]),
+            orders=None if orders is None else tuple(int(o) for o in orders),
+        )
+
+
 @dataclass
 class Provenance:
-    """Which reduction step produced each product and each QA Artifact."""
+    """Which reduction step produced each product and each QA Artifact.
 
-    products: dict[str, int] = field(default_factory=dict)
+    Each product also records the orders it covers, where it has an order axis;
+    products with no order axis are whole-state.
+    """
+
+    products: dict[str, ProductProvenance] = field(default_factory=dict)
     plots: dict[str, int] = field(default_factory=dict)
 
     def steps(self) -> set[int]:
         """Return every step ordinal that has recorded a product or QA Artifact."""
-        return {*self.products.values(), *self.plots.values()}
+        return {
+            *(record.step for record in self.products.values()),
+            *self.plots.values(),
+        }
 
-    def record_products(self, ordinal: int, keys: Iterable[str]) -> None:
-        """Record ``ordinal`` as the producer of each named product."""
-        for key in keys:
-            self.products[key] = ordinal
+    def record_products(
+        self, ordinal: int, coverage: dict[str, Optional[tuple[int, ...]]]
+    ) -> None:
+        """Record ``ordinal`` as producer of each product and the orders it covers."""
+        for key, orders in coverage.items():
+            self.products[key] = ProductProvenance(step=ordinal, orders=orders)
 
     def record_plots(self, ordinal: int, names: Iterable[str]) -> None:
         """Record ``ordinal`` as the producer of each named QA Artifact."""
         for name in names:
             self.plots[name] = ordinal
+
+    def to_json(self) -> dict[str, Any]:
+        """Serialise product provenance to the checkpoint JSON shape."""
+        return {key: record.to_json() for key, record in self.products.items()}
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> "Provenance":
+        """Rebuild product provenance from the checkpoint JSON shape."""
+        return cls(
+            products={
+                key: ProductProvenance.from_json(value) for key, value in data.items()
+            }
+        )
 
 
 @dataclass
@@ -171,6 +228,69 @@ class Lineage:
     revision: int = 0
 
 
+def _order_axis_index(value: np.ndarray, size: int) -> Optional[int]:
+    """Return the array's sole axis of length ``size``, or ``None`` if ambiguous."""
+    axes = [axis for axis, length in enumerate(value.shape) if length == size]
+    return axes[0] if len(axes) == 1 else None
+
+
+def _order_coverage(value: Any) -> Optional[tuple[int, ...]]:
+    """Return orders a freshly produced ``value`` covers, or ``None`` if whole-state.
+
+    A product has an order axis when it is an Astropy table with an ``order``
+    column or a NumPy array with a single dimension matching the canonical FIRE
+    orders. Every other product is whole-state.
+    """
+    if isinstance(value, Table):
+        if "order" in value.colnames:
+            return tuple(int(order) for order in value["order"])
+        return None
+    if isinstance(value, np.ndarray):
+        if _order_axis_index(value, FIRE_ORDER_NUMBERS.size) is None:
+            return None
+        return tuple(int(order) for order in FIRE_ORDER_NUMBERS)
+    return None
+
+
+def _trim_stale_orders(
+    value: Any,
+    coverage: Optional[tuple[int, ...]],
+    stale: "StaleMarks",
+    step: int,
+) -> tuple[Any, Optional[tuple[int, ...]]]:
+    """Drop the Stale orders from an order-scoped product.
+
+    Returns ``(kept_value, kept_orders)``. Returns ``(None, None)`` when the whole
+    product must be discarded: it is whole-state, its order axis no longer
+    matches its recorded coverage, or every covered order is Stale.
+    """
+    if coverage is None or value is None:
+        return None, None
+    if isinstance(value, Table) and "order" in value.colnames:
+        orders = np.asarray(value["order"], dtype=int)
+        keep = np.array(
+            [not stale.is_stale_order(step, int(order)) for order in orders],
+            dtype=bool,
+        )
+        if not keep.any():
+            return None, None
+        return value[keep], tuple(int(order) for order in orders[keep])
+    if isinstance(value, np.ndarray):
+        axis = _order_axis_index(value, len(coverage))
+        if axis is None:
+            return None, None
+        keep_indices = [
+            index
+            for index, order in enumerate(coverage)
+            if not stale.is_stale_order(step, order)
+        ]
+        if not keep_indices:
+            return None, None
+        kept = np.take(value, keep_indices, axis=axis)
+        return kept, tuple(coverage[index] for index in keep_indices)
+    return None, None
+
+
 @dataclass
 class ReductionState:
     """Central container for intermediate reduction data and step execution.
@@ -184,7 +304,8 @@ class ReductionState:
         order_mask: Flags marking unusable orders.
         plots: Live Plotly figures attached as QA artifacts, keyed by name.
         source: Provenance string, typically the Frame Table path.
-        provenance: Which step produced each product and each attached QA artifact.
+        provenance: Which step produced each product, the orders it covers, and
+            which step produced each attached QA artifact.
         stale: Steps whose products are out of date because an earlier step was
             re-run, scoped to the affected orders. Stale products are kept until
             a Commit discards them.
@@ -309,22 +430,20 @@ class ReductionState:
 
     def _discard_stale(self) -> None:
         """Drop every Stale product and QA artifact, rewinding progress."""
-        for key, step in list(self.provenance.products.items()):
-            if step not in self.stale:
+        for key, record in list(self.provenance.products.items()):
+            if record.step not in self.stale:
                 continue
-            value = self.products.get(key)
-            if isinstance(value, Table) and "order" in value.colnames:
-                orders = np.asarray(value["order"])
-                keep = np.array(
-                    [not self.stale.is_stale_order(step, int(o)) for o in orders],
-                    dtype=bool,
+            value, kept_orders = _trim_stale_orders(
+                self.products.get(key), record.orders, self.stale, record.step
+            )
+            if value is None:
+                self.products.pop(key, None)
+                del self.provenance.products[key]
+            else:
+                self.products[key] = value
+                self.provenance.products[key] = ProductProvenance(
+                    step=record.step, orders=kept_orders
                 )
-                kept = value[keep]
-                if len(kept):
-                    self.products[key] = kept
-                    continue
-            self.products.pop(key, None)
-            del self.provenance.products[key]
         stale_steps = self.stale.steps()
         self._drop_qa_artifacts(stale_steps)
         if stale_steps:
@@ -350,7 +469,10 @@ class ReductionState:
                 self.stale.clear(ordinal)
             else:
                 self.stale.clear_order(ordinal, int(order))
-        self.provenance.record_products(ordinal, result.products)
+        coverage = {
+            key: _order_coverage(value) for key, value in result.products.items()
+        }
+        self.provenance.record_products(ordinal, coverage)
         if qa:
             self.provenance.record_plots(ordinal, result.plots)
 

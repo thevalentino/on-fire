@@ -10,6 +10,7 @@ import plotly.graph_objects as go
 import pytest
 from astropy.table import Table
 
+from onfire.core.fire import FIRE_ORDER_NUMBERS
 from onfire.setup import FrameTable, scan_raw_dir
 from onfire.pipeline import (
     ReductionState,
@@ -540,3 +541,106 @@ def test_commit_carries_the_clones_parameter_config(make_state):
     assert baseline.config["steps"]["calibrate_wavelengths"] == {"value": 4.0}
     assert baseline.products["wave"][0] == 4.0
     assert baseline.config is not clone.config
+
+
+def _order_axis_tilt_engine(_products, _meta, _params):
+    """A product carrying a whole FIRE order axis (orders along axis 0)."""
+    coeffs = np.tile(np.asarray(FIRE_ORDER_NUMBERS, dtype=float)[:, None], (1, 2))
+    return StepResult(products={"tilt_coeffs": coeffs})
+
+
+def test_single_order_rerun_trims_the_order_axis_of_arrays(make_state):
+    register_step_engine("calibrate_wavelengths", _engine(wave=1.0))
+    register_step_engine("fit_tilts", _order_axis_tilt_engine)
+    baseline = make_state()
+    baseline.run_step("calibrate_wavelengths")
+    baseline.run_step("fit_tilts")
+    clone = baseline.run_step("calibrate_wavelengths", clone=True, order=13)
+
+    baseline.commit(clone)
+
+    coeffs = baseline.products["tilt_coeffs"]
+    assert list(coeffs[:, 0]) == [o for o in FIRE_ORDER_NUMBERS if o != 13]
+    assert baseline.step_name == "calibrate_wavelengths"
+
+
+def test_products_without_an_order_axis_are_still_discarded_whole(make_state):
+    register_step_engine("calibrate_wavelengths", _engine(wave=1.0))
+    register_step_engine("fit_tilts", _engine(tilts=np.arange(5.0)))
+    baseline = make_state()
+    baseline.run_step("calibrate_wavelengths")
+    baseline.run_step("fit_tilts")
+    clone = baseline.run_step("calibrate_wavelengths", clone=True, order=13)
+
+    baseline.commit(clone)
+
+    assert "tilts" not in baseline.products
+    assert baseline.step_name == "calibrate_wavelengths"
+
+
+def test_cross_order_arrays_are_discarded_whole(make_state):
+    register_step_engine("calibrate_wavelengths", _engine(wave=1.0))
+
+    def spliced(_p, _m, _q):
+        return StepResult(
+            products={
+                "spliced": np.tile(
+                    np.asarray(FIRE_ORDER_NUMBERS, dtype=float)[:, None], (1, 3)
+                )
+            }
+        )
+
+    register_step_engine("coadd_orders", spliced)
+    baseline = make_state()
+    baseline.run_step("calibrate_wavelengths")
+    baseline.run_step("coadd_orders")
+    clone = baseline.run_step("calibrate_wavelengths", clone=True, order=13)
+
+    baseline.commit(clone)
+
+    assert "spliced" not in baseline.products
+    assert baseline.step_name == "calibrate_wavelengths"
+
+
+def test_order_coverage_survives_a_checkpoint_round_trip(make_state, tmp_path):
+    register_step_engine("calibrate_wavelengths", _engine(wave=1.0))
+    register_step_engine("fit_tilts", _order_axis_tilt_engine)
+    baseline = make_state()
+    baseline.run_step("calibrate_wavelengths")
+    baseline.run_step("fit_tilts")
+    clone = baseline.run_step("calibrate_wavelengths", clone=True, order=13)
+
+    reloaded = ReductionState.load(clone.save(tmp_path / "out"))
+    reloaded.commit(reloaded.clone())
+
+    assert list(reloaded.products["tilt_coeffs"][:, 0]) == [
+        o for o in FIRE_ORDER_NUMBERS if o != 13
+    ]
+    assert reloaded.step_name == "calibrate_wavelengths"
+
+
+def test_legacy_checkpoints_load_treating_products_as_whole_state(make_state, tmp_path):
+    register_step_engine("calibrate_wavelengths", _engine(wave=1.0))
+    register_step_engine("fit_tilts", _order_axis_tilt_engine)
+    baseline = make_state()
+    baseline.run_step("calibrate_wavelengths")
+    baseline.run_step("fit_tilts")
+    clone = baseline.run_step("calibrate_wavelengths", clone=True, order=13)
+    path = clone.save(tmp_path / "out")
+
+    from astropy.io import fits
+    import json
+
+    with fits.open(path, mode="update") as hdul:
+        meta = hdul["ONFIREMETA"]
+        meta.data["provenance_json"][0] = json.dumps(
+            {"wave": 3, "tilt_coeffs": 4}
+        )
+        hdul.flush()
+
+    reloaded = ReductionState.load(path)
+    reloaded.commit(reloaded.clone())
+
+    assert "tilt_coeffs" not in reloaded.products
+    assert reloaded.products["wave"][0] == 1.0
+    assert reloaded.step_name == "calibrate_wavelengths"

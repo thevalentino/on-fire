@@ -81,7 +81,7 @@ def _meta_hdu(state: ReductionState) -> fits.BinTableHDU:
         "config_json": [_dumps(state.config)],
         "meta_json": [_dumps(state.meta)],
         "order_mask_json": [_dumps(state.order_mask.to_dict())],
-        "provenance_json": [_dumps(state.provenance.products)],
+        "provenance_json": [_dumps(state.provenance.to_json())],
         "stale_json": [_dumps(state.stale.to_json())],
     }
     hdu = fits.BinTableHDU(AstropyTable(columns))
@@ -139,13 +139,8 @@ def read_checkpoint(path: str | Path) -> ReductionState:
             step=int(row["step"]),
             order_mask=OrderMask.from_dict(json.loads(str(row["order_mask_json"]))),
             source=str(row["source"]),
-            provenance=Provenance(
-                products={
-                    key: int(step)
-                    for key, step in _optional_json(
-                        row, columns, "provenance_json"
-                    ).items()
-                }
+            provenance=Provenance.from_json(
+                _optional_json(row, columns, "provenance_json")
             ),
             stale=StaleMarks.from_json(_optional_json(row, columns, "stale_json")),
         )
