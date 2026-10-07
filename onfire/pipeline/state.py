@@ -173,12 +173,15 @@ class ProductProvenance:
 class Provenance:
     """Which reduction step produced each product and each QA Artifact.
 
-    Each product also records the orders it covers, where it has an order axis;
-    products with no order axis are whole-state.
+    Each product records the orders it covers, where it has an order axis;
+    products with no order axis are whole-state. Each step also records the
+    orders its QA Artifacts cover, so a missing artifact can name a lone
+    single-order run.
     """
 
     products: dict[str, ProductProvenance] = field(default_factory=dict)
     plots: dict[str, int] = field(default_factory=dict)
+    plot_orders: dict[int, Optional[tuple[int, ...]]] = field(default_factory=dict)
 
     def steps(self) -> set[int]:
         """Return every step ordinal that has recorded a product or QA Artifact."""
@@ -186,6 +189,37 @@ class Provenance:
             *(record.step for record in self.products.values()),
             *self.plots.values(),
         }
+
+    def plot_coverage(self, ordinal: int) -> Optional[tuple[int, ...]]:
+        """Return the orders ``ordinal``'s QA Artifacts cover, or ``None``.
+
+        ``None`` means the step covers every order, or that no coverage was
+        recorded; either way the caller should not name a single order.
+        """
+        return self.plot_orders.get(int(ordinal))
+
+    def record_plot_coverage(self, ordinal: int, order: Optional[int]) -> None:
+        """Record the orders ``ordinal``'s QA Artifacts cover.
+
+        A full run (``order`` is ``None``) covers every order. A single-order run
+        adds that order, unless the step is already recorded as whole-state.
+        Coverage is recorded for every run, so a step run with QA off still
+        explains which order it targeted.
+        """
+        ordinal = int(ordinal)
+        if order is None:
+            self.plot_orders[ordinal] = None
+            return
+        if ordinal in self.plot_orders and self.plot_orders[ordinal] is None:
+            return
+        orders = set(self.plot_orders.get(ordinal) or ())
+        orders.add(int(order))
+        self.plot_orders[ordinal] = tuple(sorted(orders))
+
+    def drop_plot_coverage(self, steps: Iterable[int]) -> None:
+        """Forget QA Artifact order coverage for each step in ``steps``."""
+        for step in steps:
+            self.plot_orders.pop(int(step), None)
 
     def record_products(
         self, ordinal: int, coverage: dict[str, Optional[tuple[int, ...]]]
@@ -291,6 +325,24 @@ def _trim_stale_orders(
     return None, None
 
 
+def _missing_artifact_message(
+    label: str, name: str, coverage: Optional[tuple[int, ...]]
+) -> str:
+    """Explain a missing QA Artifact, naming a lone single-order run's order.
+
+    A single-order run only produces that order's artifact, so naming the order
+    explains a figure that looks missing. A full run (or one with no recorded
+    coverage) gets the plain instruction to re-run with QA on.
+    """
+    message = f"{label} has no QA Artifact for step {name!r}; run the step with qa=True"
+    if coverage is not None and len(coverage) == 1:
+        return (
+            f"{message} (it was run for order {coverage[0]} alone, whose artifact "
+            "a single-order run produces)"
+        )
+    return message
+
+
 @dataclass
 class ReductionState:
     """Central container for intermediate reduction data and step execution.
@@ -304,8 +356,8 @@ class ReductionState:
         order_mask: Flags marking unusable orders.
         plots: Live Plotly figures attached as QA artifacts, keyed by name.
         source: Provenance string, typically the Frame Table path.
-        provenance: Which step produced each product, the orders it covers, and
-            which step produced each attached QA artifact.
+        provenance: Which step produced each product and the orders it covers,
+            and which step and orders produced each attached QA artifact.
         stale: Steps whose products are out of date because an earlier step was
             re-run, scoped to the affected orders. Stale products are kept until
             a Commit discards them.
@@ -427,6 +479,7 @@ class ReductionState:
             if step in steps:
                 self.plots.pop(name, None)
                 del self.provenance.plots[name]
+        self.provenance.drop_plot_coverage(steps)
 
     def _discard_stale(self) -> None:
         """Drop every Stale product and QA artifact, rewinding progress."""
@@ -473,6 +526,7 @@ class ReductionState:
             key: _order_coverage(value) for key, value in result.products.items()
         }
         self.provenance.record_products(ordinal, coverage)
+        self.provenance.record_plot_coverage(ordinal, order)
         if qa:
             self.provenance.record_plots(ordinal, result.plots)
 
@@ -504,11 +558,8 @@ class ReductionState:
                 if plot_step == ordinal and plot in state.plots
             ]
             if not figures:
-                raise ValueError(
-                    f"{label} has no QA Artifact for step {name!r}; run the step "
-                    "with qa=True (a single-order run only produces that "
-                    "order's artifact)"
-                )
+                coverage = state.provenance.plot_coverage(ordinal)
+                raise ValueError(_missing_artifact_message(label, name, coverage))
             columns.append(figures)
 
         figure = make_subplots(

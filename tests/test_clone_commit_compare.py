@@ -359,14 +359,57 @@ def test_compare_names_the_state_missing_a_qa_artifact(make_state):
         no_qa.compare(baseline, "calibrate_wavelengths")
 
 
-def test_compare_error_mentions_single_order_runs(make_state):
+def test_compare_error_for_a_full_run_with_qa_off_does_not_mention_single_order(make_state):
     register_step_engine("calibrate_wavelengths", _plotting_engine)
     baseline = make_state()
     baseline.run_step("calibrate_wavelengths", qa=False)
     clone = baseline.run_step("calibrate_wavelengths", clone=True)
 
-    with pytest.raises(ValueError, match="single-order"):
+    with pytest.raises(ValueError) as excinfo:
         baseline.compare(clone, "calibrate_wavelengths")
+
+    assert "QA Artifact" in str(excinfo.value)
+    assert "single-order" not in str(excinfo.value)
+
+
+def test_compare_error_names_the_order_of_a_single_order_run(make_state):
+    register_step_engine("calibrate_wavelengths", _plotting_engine)
+    baseline = make_state()
+    baseline.run_step("calibrate_wavelengths", order=17, qa=False)
+    clone = baseline.run_step("calibrate_wavelengths", clone=True)
+
+    with pytest.raises(ValueError) as excinfo:
+        baseline.compare(clone, "calibrate_wavelengths")
+
+    assert "single-order" in str(excinfo.value)
+    assert "17" in str(excinfo.value)
+
+
+def test_qa_order_coverage_is_cloned_with_the_state(make_state):
+    register_step_engine("calibrate_wavelengths", _plotting_engine)
+    baseline = make_state()
+    baseline.run_step("calibrate_wavelengths", order=17, qa=False)
+
+    clone = baseline.clone()
+
+    with pytest.raises(ValueError, match="17"):
+        clone.compare(make_state(), "calibrate_wavelengths")
+
+
+def test_qa_order_coverage_is_dropped_when_commit_discards_the_artifacts(make_state):
+    register_step_engine("calibrate_wavelengths", _engine(wave=1.0))
+    register_step_engine("fit_tilts", _engine(tilts=2.0))
+    baseline = make_state()
+    baseline.run_step("calibrate_wavelengths")
+    baseline.run_step("fit_tilts", order=17, qa=False)
+
+    clone = baseline.run_step("calibrate_wavelengths", clone=True, params={"value": 9.0})
+    baseline.commit(clone)
+
+    with pytest.raises(ValueError) as excinfo:
+        baseline.compare(baseline.clone(), "fit_tilts")
+
+    assert "single-order" not in str(excinfo.value)
 
 
 def test_a_registered_comparison_overrides_the_default(make_state):
