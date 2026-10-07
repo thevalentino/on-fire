@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
+import numpy as np
+
 from onfire.setup.table import FrameTable
 
 from onfire.pipeline.config import load_config
@@ -139,6 +141,101 @@ class ReductionState:
     def add_plot(self, name: str, figure: "Figure") -> None:
         """Attach an interactive Plotly ``figure`` to :attr:`plots`."""
         self.plots[name] = figure
+
+    def compare_telluric(self, commit: Optional[str] = None) -> "Figure":
+        """Compare the empirical and grid telluric corrections interactively.
+
+        Renders a dual Plotly figure showing, for the first reduced object, the
+        transmission and the corrected spectrum of each available correction.
+        When ``commit`` names a method (``"empirical"`` or ``"grid"``), that
+        candidate's transmission, flux, variance, inverse variance, and mask are
+        promoted to the canonical ``telluric_*`` products and the ``telluric``
+        table's method column is updated.
+
+        Args:
+            commit: Method to commit to the state, or ``None`` to only render.
+
+        Returns:
+            The comparison :class:`~plotly.graph_objects.Figure`, also attached
+            to :attr:`plots` under ``"telluric_comparison"``.
+
+        Raises:
+            ValueError: If no telluric candidates exist, or ``commit`` names an
+                unavailable method.
+        """
+        from plotly import graph_objects as go
+        from plotly.subplots import make_subplots
+
+        candidates = [
+            method
+            for method in ("empirical", "grid")
+            if self.products.get(f"telluric_{method}_transmission") is not None
+        ]
+        if not candidates:
+            raise ValueError(
+                "compare_telluric requires telluric candidate products; "
+                "run telluric_correct first"
+            )
+        if commit is not None:
+            commit = str(commit).lower()
+            if commit not in candidates:
+                raise ValueError(
+                    f"cannot commit {commit!r}; available methods: {candidates}"
+                )
+            for suffix in ("transmission", "flux", "var", "ivar", "mask"):
+                self.products[f"telluric_{suffix}"] = self.products[
+                    f"telluric_{commit}_{suffix}"
+                ]
+            table = self.products.get("telluric")
+            if table is not None:
+                table["method"] = commit
+            self.meta["telluric_method"] = commit
+
+        wave = self.products.get("telluric_wave")
+        wave = None if wave is None else np.asarray(wave, dtype=float)
+        figure = make_subplots(
+            rows=2,
+            cols=len(candidates),
+            subplot_titles=[f"{method} transmission" for method in candidates]
+            + [f"{method} corrected" for method in candidates],
+            specs=[[{}] * len(candidates), [{}] * len(candidates)],
+        )
+        for column, method in enumerate(candidates, start=1):
+            transmission = np.asarray(
+                self.products[f"telluric_{method}_transmission"], dtype=float
+            )
+            corrected = np.asarray(
+                self.products[f"telluric_{method}_flux"], dtype=float
+            )
+            x = wave[:, 0] if wave is not None else np.arange(transmission.shape[0])
+            figure.add_trace(
+                go.Scatter(
+                    x=x,
+                    y=transmission[:, 0],
+                    mode="lines",
+                    name=f"{method} transmission",
+                ),
+                row=1,
+                col=column,
+            )
+            figure.add_trace(
+                go.Scatter(
+                    x=x,
+                    y=corrected[:, 0],
+                    mode="lines",
+                    name=f"{method} corrected",
+                ),
+                row=2,
+                col=column,
+            )
+        figure.update_layout(
+            title="Telluric correction comparison",
+            height=700,
+            showlegend=False,
+        )
+        figure.update_xaxes(title_text="wavelength (Angstrom)")
+        self.add_plot("telluric_comparison", figure)
+        return figure
 
     def run_step(
         self,

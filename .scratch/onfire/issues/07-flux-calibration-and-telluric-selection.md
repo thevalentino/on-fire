@@ -7,9 +7,9 @@ Implementation of per-order spectrophotometric flux calibration (Step 9) and dua
 
 **Status:** ready-for-agent
 
-- [ ] Computes and applies per-order sensitivity functions from observed standard star exposures (`flux_calibrate`).
-- [ ] Corrects telluric molecular absorption per order using an empirical A0V standard star model (`telluric_correct`).
-- [ ] Corrects telluric absorption per order by fitting precomputed PCA atmospheric grids (`telluric_correct`).
-- [ ] Implements automated fallback logic (empirical if standard exists, else grid) for batch runs.
-- [ ] Implements `state.compare_telluric()` generating a dual Plotly QA visualization and enabling interactive selection.
-- [ ] High-level tests verify sensitivity curve derivation, telluric feature removal, and interactive selection dispatch.
+- [x] Computes and applies per-order sensitivity functions from observed standard star exposures (`flux_calibrate`).
+- [x] Corrects telluric molecular absorption per order using an empirical A0V standard star model (`telluric_correct`).
+- [x] Corrects telluric absorption per order by fitting precomputed PCA atmospheric grids (`telluric_correct`).
+- [x] Implements automated fallback logic (empirical if standard exists, else grid) for batch runs.
+- [x] Implements `state.compare_telluric()` generating a dual Plotly QA visualization and enabling interactive selection.
+- [x] High-level tests verify sensitivity curve derivation, telluric feature removal, and interactive selection dispatch.

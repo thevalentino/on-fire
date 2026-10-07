@@ -8,7 +8,7 @@ seen here (ADR 0003).
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 from astropy.table import Table
@@ -31,6 +31,11 @@ from onfire.core.fire import (
     FIRE_ORDER_NUMBERS,
     FIRE_ORDER_SPAT_POS,
 )
+from onfire.core.flux import (
+    apply_sensitivity,
+    delta_wave,
+    derive_sensitivity,
+)
 from onfire.core.objects import (
     ObjectTrace,
     collapse_profile,
@@ -49,6 +54,11 @@ from onfire.core.science import (
     pair_difference,
 )
 from onfire.core.skysub import fit_sky_surface, tilted_coordinates
+from onfire.core.telluric import (
+    apply_telluric,
+    empirical_transmission,
+    fit_telluric_grid,
+)
 from onfire.core.tilts import (
     TiltFit,
     build_tilt_fit,
@@ -2201,8 +2211,716 @@ def extract_1d(
     )
 
 
+SENSFUNC_COLUMNS = (
+    "order",
+    "npoints",
+    "rms",
+    "wave_min",
+    "wave_max",
+    "coeff",
+    "masked",
+)
+
+TELLURIC_COLUMNS = (
+    "order",
+    "obj_id",
+    "method",
+    "rms",
+    "ncoeff",
+    "masked",
+)
+
+
+def _standard_template(
+    products: dict[str, Any], params: dict[str, Any]
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return the standard-star true flux ``(wave, flux)`` for calibration."""
+    table = products.get("standard_template")
+    if table is not None:
+        return (
+            np.asarray(table["wave"], dtype=float),
+            np.asarray(table["flux"], dtype=float),
+        )
+    from onfire.data import load_a0v_template
+
+    template = load_a0v_template(params.get("a0v_path"))
+    return (
+        np.asarray(template["wave"], dtype=float),
+        np.asarray(template["flux"], dtype=float),
+    )
+
+
+def _blank_sensfunc_table(ncoeff: int) -> Table:
+    return Table(
+        {
+            "order": FIRE_ORDER_NUMBERS.astype(np.int16),
+            "npoints": np.zeros(FIRE_NORDERS, dtype=np.int32),
+            "rms": np.full(FIRE_NORDERS, np.nan, dtype=np.float32),
+            "wave_min": np.full(FIRE_NORDERS, np.nan, dtype=np.float64),
+            "wave_max": np.full(FIRE_NORDERS, np.nan, dtype=np.float64),
+            "coeff": np.full((FIRE_NORDERS, ncoeff), np.nan, dtype=np.float64),
+            "masked": np.ones(FIRE_NORDERS, dtype=bool),
+        },
+        names=SENSFUNC_COLUMNS,
+    )
+
+
+def _sensitivity_figure(
+    table: Table, sensitivity: np.ndarray, wave_soln: np.ndarray
+) -> go.Figure:
+    """Plot the sampled sensitivity factor of every calibrated order."""
+    figure = go.Figure()
+    for index, order in enumerate(FIRE_ORDER_NUMBERS):
+        if bool(table["masked"][index]):
+            continue
+        wave = np.asarray(wave_soln[:, index], dtype=float)
+        factor = np.asarray(sensitivity[:, index], dtype=float)
+        valid = np.isfinite(wave) & (factor > 0)
+        if not valid.any():
+            continue
+        figure.add_trace(
+            go.Scatter(
+                x=wave[valid],
+                y=np.log10(factor[valid]),
+                mode="lines",
+                name=f"order {int(order)}",
+            )
+        )
+    figure.update_layout(
+        title="Sensitivity functions",
+        xaxis_title="wavelength (Angstrom)",
+        yaxis_title="log10 S_lambda",
+    )
+    return figure
+
+
+def _flux_calibration_figure(
+    wave_soln: np.ndarray,
+    objects: Table,
+    flux: np.ndarray,
+    standard_fluxed: np.ndarray,
+) -> go.Figure:
+    """Plot calibrated science spectra and the fluxed standard star."""
+    figure = go.Figure()
+    orders = np.asarray(objects["order"], dtype=int)
+    obj_ids = np.asarray(objects["obj_id"], dtype=int)
+    for j in range(flux.shape[1]):
+        match = np.where(FIRE_ORDER_NUMBERS == int(orders[j]))[0]
+        if match.size == 0:
+            continue
+        wave = np.asarray(wave_soln[:, int(match[0])], dtype=float)
+        valid = np.isfinite(flux[:, j])
+        figure.add_trace(
+            go.Scatter(
+                x=wave[valid],
+                y=flux[valid, j],
+                mode="lines",
+                name=f"order {int(orders[j])} obj {int(obj_ids[j])}",
+            )
+        )
+    for index, order in enumerate(FIRE_ORDER_NUMBERS):
+        wave = np.asarray(wave_soln[:, index], dtype=float)
+        fluxed = np.asarray(standard_fluxed[:, index], dtype=float)
+        valid = np.isfinite(fluxed)
+        if not valid.any():
+            continue
+        figure.add_trace(
+            go.Scatter(
+                x=wave[valid],
+                y=fluxed[valid],
+                mode="lines",
+                line={"dash": "dot", "width": 1},
+                name=f"standard order {int(order)}",
+                showlegend=False,
+            )
+        )
+    figure.update_layout(
+        title="Flux calibration",
+        xaxis_title="wavelength (Angstrom)",
+        yaxis_title="flux (erg/s/cm2/A)",
+    )
+    return figure
+
+
+def flux_calibrate(
+    products: dict[str, Any],
+    meta: dict[str, Any],
+    params: dict[str, Any],
+) -> StepResult:
+    """Derive and apply per-order sensitivity functions (reduction step 9).
+
+    A sensitivity function is derived for every order from an observed standard
+    star of known intrinsic flux and then applied to the extracted science
+    spectra, converting counts into flux density in erg/s/cm^2/Angstrom. The
+    standard-star true flux comes from the ``standard_true`` product when
+    present, otherwise from the bundled A0V (Vega) template.
+
+    Args:
+        products: State products. Requires ``wave_soln``, ``objects``, and an
+            extracted spectra product (``opt_flux``/``opt_var`` or
+            ``boxcar_flux``/``boxcar_var``) plus ``standard_flux``.
+        meta: State metadata (unused).
+        params: Algorithmic parameters, including ``sensfunc_order`` and the
+            standard/science exposure times.
+
+    Returns:
+        A :class:`StepResult` with the per-order ``sensfunc`` table, the sampled
+        ``sensitivity`` factor, and the calibrated ``flux``/``flux_var``/
+        ``flux_ivar``/``flux_mask`` arrays, plus QA figures.
+    """
+    wave_soln = products.get("wave_soln")
+    if wave_soln is None:
+        raise ValueError(
+            "flux_calibrate requires a 'wave_soln' product; "
+            "run calibrate_wavelengths first"
+        )
+    objects = products.get("objects")
+    if objects is None:
+        raise ValueError(
+            "flux_calibrate requires an 'objects' product; run find_objects first"
+        )
+    standard_counts = products.get("standard_flux")
+    if standard_counts is None:
+        raise ValueError(
+            "flux_calibrate requires a 'standard_flux' product; "
+            "extract the spectrophotometric standard star first"
+        )
+
+    wave_soln = np.asarray(wave_soln, dtype=float)
+    nspec = wave_soln.shape[0]
+    standard_counts = np.asarray(standard_counts, dtype=float)
+    if standard_counts.ndim != 2 or standard_counts.shape[1] != FIRE_NORDERS:
+        raise ValueError(
+            "standard_flux must have shape (nspec, norders), "
+            f"got {standard_counts.shape}"
+        )
+    standard_var = products.get("standard_var")
+    standard_var = (
+        np.asarray(standard_var, dtype=float) if standard_var is not None else None
+    )
+
+    counts = products.get("opt_flux")
+    counts_var = products.get("opt_var")
+    if counts is None:
+        counts = products.get("boxcar_flux")
+        counts_var = products.get("boxcar_var")
+    if counts is None:
+        raise ValueError(
+            "flux_calibrate requires an extracted spectra product "
+            "('opt_flux' or 'boxcar_flux'); run extract_1d first"
+        )
+    counts = np.asarray(counts, dtype=float)
+    counts_var = (
+        np.asarray(counts_var, dtype=float) if counts_var is not None else None
+    )
+
+    sensfunc_order = int(params.get("sensfunc_order", 5))
+    standard_exptime = float(params.get("standard_exptime", 1.0))
+    science_exptime = float(params.get("science_exptime", 1.0))
+    standard_airmass = float(params.get("standard_airmass", 1.0))
+    niter = int(params.get("sensfunc_niter", 8))
+    sigrej = float(params.get("sensfunc_sigrej", 3.0))
+
+    template_wave, template_flux = _standard_template(products, params)
+    table = _blank_sensfunc_table(sensfunc_order + 1)
+    sensitivity = np.full((nspec, FIRE_NORDERS), np.nan, dtype=float)
+    standard_fluxed = np.full((nspec, FIRE_NORDERS), np.nan, dtype=float)
+    standard_true = np.full((nspec, FIRE_NORDERS), np.nan, dtype=float)
+    sensfuncs: dict[int, Any] = {}
+    masked_orders: dict[int, str] = {}
+
+    for index, order in enumerate(FIRE_ORDER_NUMBERS):
+        wave = wave_soln[:, index]
+        observed = standard_counts[:, index]
+        if not np.any(np.isfinite(wave)) or not np.any(np.isfinite(observed)):
+            table["masked"][index] = True
+            masked_orders[int(order)] = "no standard star spectrum"
+            continue
+        true_flux = np.interp(
+            wave, template_wave, template_flux, left=np.nan, right=np.nan
+        )
+        gpm = (
+            np.isfinite(wave)
+            & np.isfinite(observed)
+            & np.isfinite(true_flux)
+            & (true_flux > 0)
+        )
+        sampling = delta_wave(wave)
+        sensfunc = derive_sensitivity(
+            wave,
+            observed,
+            true_flux,
+            exptime=standard_exptime,
+            counts_ivar=(
+                None
+                if standard_var is None
+                else np.where(standard_var[:, index] > 0, 1.0 / standard_var[:, index], 0.0)
+            ),
+            sampling=sampling,
+            airmass=standard_airmass,
+            gpm=gpm,
+            order=sensfunc_order,
+            niter=niter,
+            sigrej=sigrej,
+        )
+        if not np.all(np.isfinite(sensfunc.coeffs)):
+            table["masked"][index] = True
+            masked_orders[int(order)] = "sensitivity fit failed"
+            continue
+        sensfuncs[int(order)] = sensfunc
+        factor = sensfunc.factor(wave)
+        sensitivity[:, index] = factor
+        standard_fluxed[:, index] = apply_sensitivity(
+            sensfunc, wave, observed, exptime=standard_exptime, sampling=sampling
+        )[0]
+        standard_true[:, index] = true_flux
+        table["npoints"][index] = int(gpm.sum())
+        table["rms"][index] = sensfunc.rms
+        table["wave_min"][index] = sensfunc.wave_min
+        table["wave_max"][index] = sensfunc.wave_max
+        table["coeff"][index, : sensfunc.coeffs.size] = sensfunc.coeffs
+        table["masked"][index] = False
+
+    orders = np.asarray(objects["order"], dtype=int)
+    obj_ids = np.asarray(objects["obj_id"], dtype=int)
+    flux = np.full_like(counts, np.nan, dtype=float)
+    flux_var = np.full_like(counts, np.nan, dtype=float)
+    flux_ivar = np.zeros_like(counts, dtype=float)
+    flux_mask = np.zeros(counts.shape, dtype=bool)
+    n_objects = 0
+    for j in range(counts.shape[1]):
+        match = np.where(FIRE_ORDER_NUMBERS == int(orders[j]))[0]
+        if match.size == 0:
+            continue
+        index = int(match[0])
+        sensfunc = sensfuncs.get(int(orders[j]))
+        if sensfunc is None:
+            continue
+        wave = wave_soln[:, index]
+        sampling = delta_wave(wave)
+        obj_flux, obj_var, obj_ivar, obj_mask = apply_sensitivity(
+            sensfunc,
+            wave,
+            counts[:, j],
+            exptime=science_exptime,
+            counts_var=None if counts_var is None else counts_var[:, j],
+            sampling=sampling,
+        )
+        flux[:, j] = obj_flux
+        if obj_var is not None:
+            flux_var[:, j] = obj_var
+            flux_ivar[:, j] = obj_ivar
+        flux_mask[:, j] = obj_mask
+        if obj_mask.any():
+            n_objects += 1
+
+    n_masked = int(np.asarray(table["masked"], dtype=bool).sum())
+    sensitivity_figure = _sensitivity_figure(table, sensitivity, wave_soln)
+    flux_figure = _flux_calibration_figure(
+        wave_soln, objects, flux, standard_fluxed
+    )
+
+    return StepResult(
+        products={
+            "sensfunc": table,
+            "sensitivity": sensitivity,
+            "standard_flux": standard_counts,
+            "standard_fluxed": standard_fluxed,
+            "standard_true": standard_true,
+            "flux": flux,
+            "flux_var": flux_var,
+            "flux_ivar": flux_ivar,
+            "flux_mask": flux_mask,
+        },
+        meta={
+            "n_orders_flux_calibrated": int(FIRE_NORDERS - n_masked),
+            "n_orders_masked": n_masked,
+            "n_objects_flux_calibrated": n_objects,
+            "sensfunc_order": sensfunc_order,
+        },
+        plots={"sensitivity": sensitivity_figure, "flux_calibration": flux_figure},
+        masked_orders=masked_orders,
+    )
+
+
+def _telluric_components(
+    products: dict[str, Any], params: dict[str, Any]
+) -> np.ndarray | None:
+    """Return the precomputed PCA telluric components, if available."""
+    components = products.get("telluric_pca")
+    if components is not None:
+        return np.asarray(components, dtype=float)
+    path = params.get("telpca_path")
+    if path is None:
+        return None
+    from astropy.io import fits
+
+    with fits.open(path, memmap=False) as hdul:
+        return np.asarray(hdul[0].data, dtype=float)
+
+
+def _telluric_transmission_figure(
+    wave_soln: np.ndarray,
+    objects: Table,
+    empirical: np.ndarray,
+    grid: np.ndarray,
+) -> go.Figure:
+    """Plot the empirical and grid transmission of every corrected object."""
+    figure = go.Figure()
+    orders = np.asarray(objects["order"], dtype=int)
+    obj_ids = np.asarray(objects["obj_id"], dtype=int)
+    for j in range(empirical.shape[1]):
+        match = np.where(FIRE_ORDER_NUMBERS == int(orders[j]))[0]
+        if match.size == 0:
+            continue
+        wave = np.asarray(wave_soln[:, int(match[0])], dtype=float)
+        label = f"order {int(orders[j])} obj {int(obj_ids[j])}"
+        for curves, name in ((empirical[:, j], "empirical"), (grid[:, j], "grid")):
+            valid = np.isfinite(curves)
+            if not valid.any():
+                continue
+            figure.add_trace(
+                go.Scatter(
+                    x=wave[valid],
+                    y=curves[valid],
+                    mode="lines",
+                    name=f"{label} {name}",
+                )
+            )
+    figure.update_layout(
+        title="Telluric transmission",
+        xaxis_title="wavelength (Angstrom)",
+        yaxis_title="transmission",
+    )
+    return figure
+
+
+def _telluric_spectra_figure(
+    wave_soln: np.ndarray,
+    objects: Table,
+    flux: np.ndarray,
+    corrected: np.ndarray,
+) -> go.Figure:
+    """Plot corrected science spectra over the uncorrected input."""
+    figure = go.Figure()
+    orders = np.asarray(objects["order"], dtype=int)
+    obj_ids = np.asarray(objects["obj_id"], dtype=int)
+    for j in range(corrected.shape[1]):
+        match = np.where(FIRE_ORDER_NUMBERS == int(orders[j]))[0]
+        if match.size == 0:
+            continue
+        wave = np.asarray(wave_soln[:, int(match[0])], dtype=float)
+        label = f"order {int(orders[j])} obj {int(obj_ids[j])}"
+        valid = np.isfinite(corrected[:, j])
+        figure.add_trace(
+            go.Scatter(
+                x=wave[valid],
+                y=corrected[valid, j],
+                mode="lines",
+                name=label,
+            )
+        )
+        valid = np.isfinite(flux[:, j])
+        figure.add_trace(
+            go.Scatter(
+                x=wave[valid],
+                y=flux[valid, j],
+                mode="lines",
+                line={"dash": "dot", "width": 1},
+                name=f"{label} uncorrected",
+                showlegend=False,
+            )
+        )
+    figure.update_layout(
+        title="Telluric-corrected spectra",
+        xaxis_title="wavelength (Angstrom)",
+        yaxis_title="flux (erg/s/cm2/A)",
+    )
+    return figure
+
+
+def _run_telluric_correction(
+    wave_soln: np.ndarray,
+    objects: Table,
+    flux: np.ndarray,
+    flux_var: np.ndarray,
+    correction_for: Callable[[int, int, np.ndarray], Any],
+) -> dict[str, Any]:
+    """Apply a per-object telluric correction produced by ``correction_for``.
+
+    ``correction_for(order_index, object_index, wave)`` returns the
+    :class:`~onfire.core.telluric.TelluricCorrection` for one object. The helper
+    loops over every object, stores the transmission and wavelength grids, and
+    propagates the variance through :func:`apply_telluric`.
+    """
+    nspec, nobjects = flux.shape
+    wave_grid = np.full((nspec, nobjects), np.nan)
+    transmission = np.full((nspec, nobjects), np.nan)
+    corrected = np.full((nspec, nobjects), np.nan)
+    variance = np.full((nspec, nobjects), np.nan)
+    ivar = np.zeros((nspec, nobjects))
+    mask = np.zeros((nspec, nobjects), dtype=bool)
+    rms = np.full(nobjects, np.nan)
+    ncoeff = 0
+    orders = np.asarray(objects["order"], dtype=int)
+    for j in range(nobjects):
+        match = np.where(FIRE_ORDER_NUMBERS == int(orders[j]))[0]
+        if match.size == 0:
+            continue
+        index = int(match[0])
+        wave = wave_soln[:, index]
+        correction = correction_for(index, j, wave)
+        ncoeff = int(correction.coeffs.size) if correction.coeffs is not None else 0
+        rms[j] = correction.rms
+        wave_grid[:, j] = wave
+        transmission[:, j] = correction.evaluate(wave)
+        corrected[:, j], variance[:, j], ivar[:, j], mask[:, j] = apply_telluric(
+            wave, flux[:, j], correction, variance=flux_var[:, j]
+        )
+    return {
+        "wave": wave_grid,
+        "transmission": transmission,
+        "flux": corrected,
+        "var": variance,
+        "ivar": ivar,
+        "mask": mask,
+        "rms": rms,
+        "ncoeff": ncoeff,
+    }
+
+
+def _empirical_correction(
+    standard_observed: np.ndarray,
+    standard_model: np.ndarray,
+    params: dict[str, Any],
+) -> Callable[[int, int, np.ndarray], Any]:
+    """Return a callback deriving empirical A0V transmission for one object."""
+    continuum_order = int(params.get("telluric_continuum_order", 6))
+
+    def correction_for(index: int, _j: int, wave: np.ndarray) -> Any:
+        return empirical_transmission(
+            wave,
+            standard_observed[:, index],
+            standard_model[:, index],
+            continuum_order=continuum_order,
+        )
+
+    return correction_for
+
+
+def _grid_correction(
+    flux: np.ndarray, components: np.ndarray, params: dict[str, Any]
+) -> Callable[[int, int, np.ndarray], Any]:
+    """Return a callback fitting the PCA grid to one object's spectrum."""
+    object_order = int(params.get("telluric_object_order", 4))
+    ncoeff_param = params.get("telluric_ncoeff")
+    ncoeff = None if ncoeff_param is None else int(ncoeff_param)
+    niter = int(params.get("telluric_grid_niter", 4))
+
+    def correction_for(_index: int, j: int, wave: np.ndarray) -> Any:
+        return fit_telluric_grid(
+            wave,
+            flux[:, j],
+            components,
+            object_order=object_order,
+            ncoeff=ncoeff,
+            niter=niter,
+        )
+
+    return correction_for
+
+
+def telluric_correct(
+    products: dict[str, Any],
+    meta: dict[str, Any],
+    params: dict[str, Any],
+) -> StepResult:
+    """Remove atmospheric absorption per order (reduction step 10).
+
+    Two independent corrections are computed when their inputs are available:
+    an empirical correction derived from an observed A0V standard star
+    (``standard_flux``/``standard_true``) and a grid correction fit against a
+    precomputed PCA atmospheric model (``telluric_pca``). In ``auto`` mode the
+    empirical correction is committed when a standard star exists, otherwise the
+    grid correction is used.
+
+    Args:
+        products: State products. Requires flux-calibrated ``flux``/``flux_var``
+            arrays, ``wave_soln`` and ``objects``.
+        meta: State metadata (unused).
+        params: Algorithmic parameters, including ``method``
+            (``auto``/``empirical``/``grid``).
+
+    Returns:
+        A :class:`StepResult` with the committed ``telluric_*`` products, every
+        available candidate correction, a ``telluric`` table, and QA figures.
+    """
+    wave_soln = products.get("wave_soln")
+    if wave_soln is None:
+        raise ValueError(
+            "telluric_correct requires a 'wave_soln' product; "
+            "run calibrate_wavelengths first"
+        )
+    objects = products.get("objects")
+    if objects is None:
+        raise ValueError(
+            "telluric_correct requires an 'objects' product; run find_objects first"
+        )
+    flux = products.get("flux")
+    flux_var = products.get("flux_var")
+    if flux is None:
+        raise ValueError(
+            "telluric_correct requires a 'flux' product; run flux_calibrate first"
+        )
+    wave_soln = np.asarray(wave_soln, dtype=float)
+    flux = np.asarray(flux, dtype=float)
+    flux_var = (
+        np.asarray(flux_var, dtype=float)
+        if flux_var is not None
+        else np.full_like(flux, np.nan)
+    )
+
+    standard_observed = products.get("standard_flux")
+    standard_model = products.get("standard_true")
+    has_empirical = standard_observed is not None and standard_model is not None
+    components = _telluric_components(products, params)
+    has_grid = components is not None
+
+    requested = str(params.get("method", "auto")).lower()
+    if requested == "auto":
+        if has_empirical:
+            active = "empirical"
+        elif has_grid:
+            active = "grid"
+        else:
+            raise ValueError(
+                "telluric_correct found neither a standard star nor a telluric "
+                "PCA grid; supply 'standard_flux'/'standard_true' or "
+                "'telluric_pca'/'telpca_path'"
+            )
+    elif requested in ("empirical", "grid"):
+        if requested == "empirical" and not has_empirical:
+            raise ValueError(
+                "telluric_correct method 'empirical' requires "
+                "'standard_flux' and 'standard_true' products"
+            )
+        if requested == "grid" and not has_grid:
+            raise ValueError(
+                "telluric_correct method 'grid' requires a 'telluric_pca' "
+                "product or a 'telpca_path' parameter"
+            )
+        active = requested
+    else:
+        raise ValueError(
+            f"unknown telluric method {requested!r}; "
+            "expected 'auto', 'empirical' or 'grid'"
+        )
+
+    empirical = (
+        _run_telluric_correction(
+            wave_soln,
+            objects,
+            flux,
+            flux_var,
+            _empirical_correction(
+                np.asarray(standard_observed, dtype=float),
+                np.asarray(standard_model, dtype=float),
+                params,
+            ),
+        )
+        if has_empirical
+        else None
+    )
+    grid = (
+        _run_telluric_correction(
+            wave_soln,
+            objects,
+            flux,
+            flux_var,
+            _grid_correction(flux, components, params),
+        )
+        if has_grid
+        else None
+    )
+    selected = empirical if active == "empirical" else grid
+    if selected is None:
+        raise ValueError(
+            f"telluric_correct could not compute the {active!r} correction"
+        )
+
+    orders = np.asarray(objects["order"], dtype=int)
+    obj_ids = np.asarray(objects["obj_id"], dtype=int)
+    table = Table(
+        {
+            "order": orders.astype(np.int16),
+            "obj_id": obj_ids.astype(np.int32),
+            "method": np.asarray([active] * len(orders), dtype=str),
+            "rms": np.asarray(selected["rms"], dtype=np.float32),
+            "ncoeff": np.full(len(orders), int(selected["ncoeff"]), dtype=np.int32),
+            "masked": np.asarray(
+                [not np.any(selected["mask"][:, j]) for j in range(flux.shape[1])],
+                dtype=bool,
+            ),
+        },
+        names=TELLURIC_COLUMNS,
+    )
+
+    def _candidate(name: str, data: dict[str, Any]) -> dict[str, Any]:
+        return {
+            f"telluric_{name}_transmission": data["transmission"],
+            f"telluric_{name}_flux": data["flux"],
+            f"telluric_{name}_var": data["var"],
+            f"telluric_{name}_ivar": data["ivar"],
+            f"telluric_{name}_mask": data["mask"],
+        }
+
+    products_out: dict[str, Any] = {}
+    if empirical is not None:
+        products_out.update(_candidate("empirical", empirical))
+    if grid is not None:
+        products_out.update(_candidate("grid", grid))
+    products_out.update(
+        {
+            "telluric": table,
+            "telluric_wave": selected["wave"],
+            "telluric_transmission": selected["transmission"],
+            "telluric_flux": selected["flux"],
+            "telluric_var": selected["var"],
+            "telluric_ivar": selected["ivar"],
+            "telluric_mask": selected["mask"],
+        }
+    )
+
+    n_corrected = int(
+        sum(1 for j in range(flux.shape[1]) if selected["mask"][:, j].any())
+    )
+    transmission_figure = _telluric_transmission_figure(
+        wave_soln,
+        objects,
+        empirical["transmission"] if empirical is not None else np.full_like(flux, np.nan),
+        grid["transmission"] if grid is not None else np.full_like(flux, np.nan),
+    )
+    spectra_figure = _telluric_spectra_figure(
+        wave_soln, objects, flux, selected["flux"]
+    )
+
+    return StepResult(
+        products=products_out,
+        meta={
+            "telluric_method": active,
+            "n_objects_telluric_corrected": n_corrected,
+            "telluric_available_empirical": bool(has_empirical),
+            "telluric_available_grid": bool(has_grid),
+        },
+        plots={
+            "telluric_transmission": transmission_figure,
+            "telluric_spectra": spectra_figure,
+        },
+    )
+
+
 def register_engines() -> None:
-    """Register the implemented Step Engines (reduction steps 1-8)."""
+    """Register the implemented Step Engines (reduction steps 1-10)."""
     register_step_engine("prep_calibrations", prep_calibrations)
     register_step_engine("trace_orders", trace_orders)
     register_step_engine("calibrate_wavelengths", calibrate_wavelengths)
@@ -2211,3 +2929,5 @@ def register_engines() -> None:
     register_step_engine("find_objects", find_objects)
     register_step_engine("subtract_sky", subtract_sky)
     register_step_engine("extract_1d", extract_1d)
+    register_step_engine("flux_calibrate", flux_calibrate)
+    register_step_engine("telluric_correct", telluric_correct)

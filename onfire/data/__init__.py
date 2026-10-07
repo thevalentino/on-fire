@@ -13,10 +13,37 @@ from pathlib import Path
 from astropy.io import ascii, fits
 from astropy.table import Table
 
+import numpy as np
+
 DATA_DIR: Path = Path(__file__).resolve().parent
 
 FIRE_TEMPLATE_PATH: Path = DATA_DIR / "reid_arxiv" / "magellan_fire_echelle.fits"
 FIRE_OH_LINES_PATH: Path = DATA_DIR / "arc_lines" / "OH_FIRE_Echelle_lines.dat"
+FIRE_A0V_TEMPLATE_PATH: Path = DATA_DIR / "standards" / "vega_a0v.fits"
+
+
+def load_a0v_template(path: str | Path | None = None) -> Table:
+    """Load the bundled A0V (Vega) standard-star reference spectrum.
+
+    The template provides the intrinsic, absolutely flux-calibrated spectrum of
+    an A0V star over the FIRE echelle range. It is used both as the
+    spectrophotometric standard for :func:`onfire.core.flux.derive_sensitivity`
+    and as the photospheric model for empirical telluric correction.
+
+    Args:
+        path: Optional override for the template FITS path.
+
+    Returns:
+        An Astropy table with columns ``wave`` (Angstrom) and ``flux``
+        (erg/s/cm^2/Angstrom).
+    """
+    table = Table.read(Path(path) if path is not None else FIRE_A0V_TEMPLATE_PATH)
+    return Table(
+        {
+            "wave": np.asarray(table["wave"], dtype=float),
+            "flux": np.asarray(table["flux"], dtype=float),
+        }
+    )
 
 
 def load_fire_template(path: str | Path | None = None) -> Table:
@@ -70,8 +97,10 @@ def load_fire_line_list(path: str | Path | None = None) -> Table:
 
 __all__ = [
     "DATA_DIR",
+    "FIRE_A0V_TEMPLATE_PATH",
     "FIRE_OH_LINES_PATH",
     "FIRE_TEMPLATE_PATH",
+    "load_a0v_template",
     "load_fire_line_list",
     "load_fire_template",
 ]
