@@ -114,6 +114,64 @@ class PolynomialFit:
         return np.column_stack(basis) @ np.asarray(self.coeffs, dtype=float)
 
 
+def robust_matrix_fit(
+    matrix: np.ndarray,
+    values: np.ndarray,
+    *,
+    weights: np.ndarray | None = None,
+    in_gpm: np.ndarray | None = None,
+    niter: int = 8,
+    sigrej: float = 3.0,
+) -> tuple[np.ndarray, np.ndarray, float]:
+    """Solve a linear design matrix with iterative sigma clipping.
+
+    This is the shared engine behind :func:`robust_legendre_fit` and the
+    B-spline sky fits: it performs weighted least squares, rejects outliers
+    beyond ``sigrej`` robust sigma, and iterates to convergence.
+
+    Args:
+        matrix: Design matrix of shape ``(npoints, nterms)``.
+        values: Dependent values to fit.
+        weights: Optional per-point weights, e.g. ``sqrt(ivar)``.
+        in_gpm: Optional initial boolean good-point mask.
+        niter: Maximum number of rejection iterations.
+        sigrej: Rejection threshold in robust sigma.
+
+    Returns:
+        ``(coeffs, good, rms)`` with the fitted coefficients, the final
+        good-point mask, and the RMS residual of the retained points.
+    """
+    matrix = np.asarray(matrix, dtype=float)
+    values = np.asarray(values, dtype=float).ravel()
+    npoints = values.size
+    if weights is None:
+        weights = np.ones(npoints)
+    weights = np.asarray(weights, dtype=float).ravel()
+    good = np.isfinite(values) if in_gpm is None else np.asarray(in_gpm, dtype=bool).copy()
+
+    coeffs = np.zeros(matrix.shape[1])
+    for _ in range(max(1, niter)):
+        use = good & np.isfinite(values) & np.isfinite(weights) & (weights > 0)
+        if use.sum() <= matrix.shape[1]:
+            break
+        a = matrix[use] * weights[use][:, None]
+        b = values[use] * weights[use]
+        coeffs, *_ = np.linalg.lstsq(a, b, rcond=None)
+        residual = values - matrix @ coeffs
+        scatter = mad_std(residual[use]) if use.sum() > 1 else 0.0
+        if scatter <= 0:
+            break
+        new_good = good & (np.abs(residual) <= sigrej * scatter)
+        if np.array_equal(new_good, good):
+            break
+        good = new_good
+
+    use = good & np.isfinite(values)
+    residual = values[use] - matrix[use] @ coeffs
+    rms = float(np.sqrt(np.mean(residual**2))) if residual.size else float("nan")
+    return coeffs, good, rms
+
+
 def robust_legendre_fit(
     coords: list[np.ndarray],
     values: np.ndarray,
@@ -143,37 +201,13 @@ def robust_legendre_fit(
     """
     coords = [np.asarray(c, dtype=float).ravel() for c in coords]
     values = np.asarray(values, dtype=float).ravel()
-    npoints = values.size
     if domains is None:
         domains = [(float(c.min()), float(c.max())) for c in coords]
     matrix = design_matrix(coords, orders, domains)
-    good = np.ones(npoints, dtype=bool) if in_gpm is None else np.asarray(in_gpm, dtype=bool).copy()
-    if weights is None:
-        weights = np.ones(npoints)
-    weights = np.asarray(weights, dtype=float)
-
-    fit = PolynomialFit(np.zeros(matrix.shape[1]), tuple(orders), list(domains))
-    for _ in range(max(1, niter)):
-        use = good & np.isfinite(values)
-        if use.sum() <= matrix.shape[1]:
-            break
-        w = np.where(use, weights, 0.0)
-        a = matrix * w[:, None]
-        b = np.where(use, values * w, 0.0)
-        coeffs, *_ = np.linalg.lstsq(a, b, rcond=None)
-        fit = PolynomialFit(coeffs, tuple(orders), list(domains))
-        resid = values - matrix @ coeffs
-        scatter = mad_std(resid[use]) if use.sum() > 1 else 0.0
-        if scatter <= 0:
-            break
-        new_good = good & (np.abs(resid) <= sigrej * scatter)
-        if np.array_equal(new_good, good):
-            break
-        good = new_good
-
-    use = good & np.isfinite(values)
-    resid = values[use] - fit.evaluate([c[use] for c in coords])
-    rms = float(np.sqrt(np.mean(resid**2))) if resid.size else float("nan")
+    coeffs, good, rms = robust_matrix_fit(
+        matrix, values, weights=weights, in_gpm=in_gpm, niter=niter, sigrej=sigrej
+    )
+    fit = PolynomialFit(coeffs, tuple(orders), list(domains))
     return fit, good, rms
 
 
@@ -181,4 +215,5 @@ __all__ = [
     "PolynomialFit",
     "design_matrix",
     "robust_legendre_fit",
+    "robust_matrix_fit",
 ]

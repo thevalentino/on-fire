@@ -24,7 +24,24 @@ from onfire.core.fire import (
     FIRE_ORDER_NUMBERS,
     FIRE_ORDER_SPAT_POS,
 )
+from onfire.core.objects import (
+    ObjectTrace,
+    collapse_profile,
+    evaluate_trace,
+    find_profile_peaks,
+    fit_trace,
+    profile_snr,
+    rectify_order,
+    trace_object,
+)
 from onfire.core.polyfit import PolynomialFit
+from onfire.core.science import (
+    combine_frames,
+    flat_field,
+    frame_variance,
+    pair_difference,
+)
+from onfire.core.skysub import fit_sky_surface, tilted_coordinates
 from onfire.core.tilts import (
     TiltFit,
     build_tilt_fit,
@@ -976,9 +993,703 @@ def fit_tilts(
     )
 
 
+def _simple_heatmap(z: np.ndarray, title: str, colorbar: str = "counts") -> go.Figure:
+    """Build a plain detector-image heatmap QA figure."""
+    figure = go.Figure(
+        data=go.Heatmap(z=np.asarray(z, dtype=float), colorscale="Viridis", colorbar={"title": colorbar})
+    )
+    figure.update_layout(title=title, xaxis_title="spatial", yaxis_title="dispersion")
+    return figure
+
+
+def process_science(
+    products: dict[str, Any],
+    meta: dict[str, Any],
+    params: dict[str, Any],
+) -> StepResult:
+    """Flat-field science frames and prepare background subtraction (step 5).
+
+    The Parameter Config ``mode`` selects between Pair Differencing (``A - B``
+    of consecutive nodded exposures, which cancels the thermal and OH sky) and
+    Stare Mode (a single fixed pointing, whose sky is modeled downstream). The
+    output carries a variance array propagated from detector noise.
+    """
+    raw = products.get("raw_science")
+    if raw is None:
+        raise ValueError(
+            "process_science requires a 'raw_science' product; "
+            "load raw science exposures first"
+        )
+    stack = np.asarray(raw, dtype=float)
+    if stack.ndim == 2:
+        stack = stack[np.newaxis, :, :]
+    if stack.ndim != 3:
+        raise ValueError(
+            f"raw_science must have shape (nframes, nspec, nspat), got {stack.shape}"
+        )
+
+    flat = products.get("flat_norm")
+    if flat is None:
+        flat = products.get("flat")
+    if flat is None:
+        raise ValueError(
+            "process_science requires a 'flat_norm' or 'flat' product; "
+            "run prep_calibrations first"
+        )
+    flat = np.asarray(flat, dtype=float)
+
+    gain = float(params.get("gain", 1.0))
+    read_noise = float(params.get("read_noise", 0.0))
+    mode = str(params.get("mode", "pair_difference")).lower()
+    nframes = stack.shape[0]
+
+    if mode == "pair_difference":
+        if nframes < 2:
+            raise ValueError(
+                "pair differencing requires at least two science frames; "
+                f"got {nframes}"
+            )
+        npairs = nframes // 2
+        differences = np.empty((npairs, *stack.shape[1:]), dtype=float)
+        variances = np.empty_like(differences)
+        for pair in range(npairs):
+            a = stack[2 * pair]
+            b = stack[2 * pair + 1]
+            differences[pair] = pair_difference(
+                flat_field(a, flat), flat_field(b, flat)
+            )
+            variances[pair] = frame_variance(
+                a, flat, gain=gain, read_noise=read_noise
+            ) + frame_variance(b, flat, gain=gain, read_noise=read_noise)
+        science = combine_frames(differences)
+        science_var = np.nanmean(variances, axis=0) / max(1, npairs)
+        ncombined = npairs
+    elif mode == "stare":
+        flat_frames = np.stack([flat_field(frame, flat) for frame in stack])
+        science = combine_frames(flat_frames)
+        frame_vars = np.stack(
+            [
+                frame_variance(frame, flat, gain=gain, read_noise=read_noise)
+                for frame in stack
+            ]
+        )
+        science_var = np.nanmean(frame_vars, axis=0) / max(1, nframes)
+        ncombined = nframes
+    else:
+        raise ValueError(
+            f"unknown science mode {mode!r}; expected 'pair_difference' or 'stare'"
+        )
+
+    science = np.asarray(science, dtype=float)
+    science_var = np.asarray(science_var, dtype=float)
+    good = np.isfinite(science) & np.isfinite(science_var) & (science_var > 0)
+    bad = products.get("bad_pixel_mask")
+    if bad is not None:
+        good &= ~np.asarray(bad, dtype=bool)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        ivar = np.where(
+            good, 1.0 / np.maximum(science_var, 1e-12), 0.0
+        )
+
+    figure = _simple_heatmap(science, f"Science frame ({mode})")
+    return StepResult(
+        products={
+            "science": science,
+            "science_var": science_var,
+            "science_ivar": ivar,
+            "science_mask": good,
+        },
+        meta={
+            "science_mode": mode,
+            "n_science_frames": int(nframes),
+            "n_science_combined": int(ncombined),
+            "n_science_bad_pixels": int((~good).sum()),
+        },
+        plots={"science": figure},
+    )
+
+
+def _order_edges(
+    traces: Table, order: int, nspec: int
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Evaluate one order's left/right edge positions from its stored trace."""
+    match = traces[traces["order"] == order]
+    if len(match) == 0:
+        return None
+    row = match[0]
+    if bool(row["masked"]):
+        return None
+    left_coeff = np.asarray(row["left_coeff"], dtype=float)
+    right_coeff = np.asarray(row["right_coeff"], dtype=float)
+    if not (np.all(np.isfinite(left_coeff)) and np.all(np.isfinite(right_coeff))):
+        return None
+    xmid = float(row["xmid"])
+    xscale = float(row["xscale"])
+    rows = np.arange(nspec)
+    left = evaluate_edge_trace(left_coeff, xmid, xscale, rows)
+    right = evaluate_edge_trace(right_coeff, xmid, xscale, rows)
+    return left, right
+
+
+OBJECT_COLUMNS = (
+    "order",
+    "obj_id",
+    "fracpos",
+    "spat_pixpos",
+    "fwhm",
+    "box_radius",
+    "snr",
+    "rms",
+    "xmid",
+    "xscale",
+    "ncoeff",
+    "trace_coeff",
+    "masked",
+)
+
+
+def _objects_table(traces: list[ObjectTrace], ncoeff: int) -> Table:
+    table = Table(
+        {
+            "order": np.asarray([t.order for t in traces], dtype=np.int16),
+            "obj_id": np.arange(len(traces), dtype=np.int32),
+            "fracpos": np.asarray([t.fracpos for t in traces], dtype=np.float32),
+            "spat_pixpos": np.asarray([t.spat_pixpos for t in traces], dtype=np.float32),
+            "fwhm": np.asarray([t.fwhm for t in traces], dtype=np.float32),
+            "box_radius": np.asarray([t.box_radius for t in traces], dtype=np.float32),
+            "snr": np.asarray([t.snr for t in traces], dtype=np.float32),
+            "rms": np.asarray([t.rms for t in traces], dtype=np.float32),
+            "xmid": np.asarray([t.xmid for t in traces], dtype=np.float32),
+            "xscale": np.asarray([t.xscale for t in traces], dtype=np.float32),
+            "ncoeff": np.full(len(traces), ncoeff, dtype=np.int32),
+            "trace_coeff": np.asarray(
+                [np.asarray(t.coeff, dtype=float) for t in traces], dtype=float
+            ).reshape(len(traces), ncoeff),
+            "masked": np.asarray([t.masked for t in traces], dtype=bool),
+        },
+        names=OBJECT_COLUMNS,
+    )
+    return table
+
+
+def _objects_from_table(table: Table) -> dict[int, list[ObjectTrace]]:
+    grouped: dict[int, list[ObjectTrace]] = {}
+    for row in table:
+        trace = ObjectTrace(
+            order=int(row["order"]),
+            coeff=np.asarray(row["trace_coeff"], dtype=float),
+            xmid=float(row["xmid"]),
+            xscale=float(row["xscale"]),
+            rms=float(row["rms"]),
+            fracpos=float(row["fracpos"]),
+            spat_pixpos=float(row["spat_pixpos"]),
+            fwhm=float(row["fwhm"]),
+            box_radius=float(row["box_radius"]),
+            snr=float(row["snr"]),
+            masked=bool(row["masked"]),
+        )
+        grouped.setdefault(trace.order, []).append(trace)
+    return grouped
+
+
+def _detect_order_objects(
+    image: np.ndarray,
+    ivar: np.ndarray,
+    mask: np.ndarray | None,
+    left: np.ndarray,
+    right: np.ndarray,
+    order: int,
+    *,
+    fwhm: float,
+    snr_thresh: float,
+    ncoeff: int,
+    trim_edg: float,
+    box_factor: float,
+    max_objects: int | None,
+) -> tuple[list[ObjectTrace], np.ndarray, np.ndarray, np.ndarray]:
+    """Detect and trace objects within one order, returning QA diagnostics."""
+    nspec = image.shape[0]
+    width = np.nanmax(right - left)
+    if not np.isfinite(width) or width < 3:
+        return [], np.array([]), np.array([]), np.array([], dtype=int)
+    nsamp = int(min(512, max(5, np.ceil(width))))
+    rect, spat = rectify_order(image, left, right, nsamp)
+    valid = np.isfinite(rect)
+    if mask is not None:
+        mask_rect, _ = rectify_order(np.asarray(mask, dtype=float), left, right, nsamp)
+        valid &= mask_rect > 0.5
+    rect_ivar, _ = rectify_order(ivar, left, right, nsamp)
+    rect_ivar = np.nan_to_num(rect_ivar, nan=0.0, posinf=0.0, neginf=0.0)
+
+    profile, good = collapse_profile(rect, gpm=valid)
+    snr = profile_snr(rect_ivar, good, profile)
+    peaks, peak_snr = find_profile_peaks(
+        profile,
+        snr=snr,
+        threshold=snr_thresh,
+        fwhm=fwhm,
+        trim_edg=trim_edg,
+        max_objects=max_objects,
+    )
+
+    traces: list[ObjectTrace] = []
+    for k, peak in enumerate(peaks):
+        positions, xmid, xscale = trace_object(
+            rect, spat, valid, int(peak), half_width=fwhm, maxshift=1.0
+        )
+        coeff, rms = fit_trace(positions, ncoeff=ncoeff)
+        failed = not np.all(np.isfinite(coeff))
+        centre = float(
+            evaluate_trace(coeff, xmid, xscale, np.array([nspec // 2]))[0]
+        ) if not failed else float(spat[nspec // 2, int(peak)])
+        traces.append(
+            ObjectTrace(
+                order=order,
+                coeff=coeff,
+                xmid=xmid,
+                xscale=xscale,
+                rms=rms,
+                fracpos=float((peak + 0.5) / nsamp),
+                spat_pixpos=centre,
+                fwhm=float(fwhm),
+                box_radius=float(box_factor * fwhm),
+                snr=float(peak_snr[k]),
+                masked=failed,
+            )
+        )
+    return traces, profile, snr, peaks
+
+
+def find_objects(
+    products: dict[str, Any],
+    meta: dict[str, Any],
+    params: dict[str, Any],
+) -> StepResult:
+    """Detect spatial object profiles and trace them per order (step 6).
+
+    Each order is rectified along its edge traces, collapsed into a
+    sigma-clipped spatial profile, and searched for peaks above the S/N
+    threshold. The detected centroids are traced along dispersion and fit with
+    a Legendre polynomial. Background pixels outside the object boxes are
+    flagged so :func:`subtract_sky` can fit the sky around the objects.
+    """
+    image = products.get("science")
+    if image is None:
+        raise ValueError(
+            "find_objects requires a 'science' product; run process_science first"
+        )
+    traces_product = products.get("order_traces")
+    if traces_product is None:
+        raise ValueError(
+            "find_objects requires an 'order_traces' product; run trace_orders first"
+        )
+    image = np.asarray(image, dtype=float)
+    nspec, nspat = image.shape
+    ivar = products.get("science_ivar")
+    if ivar is None:
+        ivar = np.where(np.isfinite(image), 1.0, 0.0)
+    ivar = np.asarray(ivar, dtype=float)
+    science_mask = products.get("science_mask")
+    science_mask = (
+        None if science_mask is None else np.asarray(science_mask, dtype=bool)
+    )
+
+    fwhm = float(params.get("fwhm", 3.0))
+    snr_thresh = float(params.get("snr_thresh", 5.0))
+    ncoeff = int(params.get("obj_ncoeff", 4))
+    trim_edg = float(params.get("obj_trim_edg", 1.0))
+    box_factor = float(params.get("box_factor", 4.0))
+    max_objects = params.get("max_objects_per_order")
+    max_objects = int(max_objects) if max_objects is not None else None
+
+    existing_table = products.get("objects")
+    target_index = _target_order_index(params)
+    per_order: dict[int, list[ObjectTrace]] = {}
+    if target_index is not None and existing_table is not None:
+        per_order = _objects_from_table(existing_table)
+        indices = [target_index]
+    else:
+        indices = list(range(FIRE_NORDERS))
+
+    diagnostics: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+    masked_orders: dict[int, str] = {}
+    for index in indices:
+        order = int(FIRE_ORDER_NUMBERS[index])
+        edges = _order_edges(traces_product, order, nspec)
+        if edges is None:
+            per_order[order] = []
+            masked_orders[order] = "no order trace"
+            continue
+        left, right = edges
+        detected, profile, snr, peaks = _detect_order_objects(
+            image,
+            ivar,
+            science_mask,
+            left,
+            right,
+            order,
+            fwhm=fwhm,
+            snr_thresh=snr_thresh,
+            ncoeff=ncoeff,
+            trim_edg=trim_edg,
+            box_factor=box_factor,
+            max_objects=max_objects,
+        )
+        per_order[order] = detected
+        diagnostics[order] = (profile, snr, peaks)
+
+    ordered_traces: list[ObjectTrace] = []
+    for order in FIRE_ORDER_NUMBERS:
+        ordered_traces.extend(per_order.get(int(order), []))
+
+    rows = np.arange(nspec)
+    object_traces = np.full((nspec, len(ordered_traces)), np.nan, dtype=float)
+    object_skymask = np.ones((nspec, nspat), dtype=bool)
+    for j, trace in enumerate(ordered_traces):
+        if trace.masked:
+            continue
+        positions = evaluate_trace(trace.coeff, trace.xmid, trace.xscale, rows)
+        object_traces[:, j] = positions
+        radius = max(1.0, trace.box_radius)
+        for row in range(nspec):
+            centre = positions[row]
+            if not np.isfinite(centre):
+                continue
+            lo = max(0, int(np.floor(centre - radius)))
+            hi = min(nspat, int(np.ceil(centre + radius)) + 1)
+            if hi > lo:
+                object_skymask[row, lo:hi] = False
+
+    table = _objects_table(ordered_traces, ncoeff)
+    object_orders = np.asarray([t.order for t in ordered_traces], dtype=np.int16)
+    object_box_radii = np.asarray([t.box_radius for t in ordered_traces], dtype=np.float32)
+
+    profiles_figure = _object_profile_figure(diagnostics)
+    traces_figure = _object_traces_figure(image, object_traces, object_orders)
+
+    n_masked = int(np.asarray(table["masked"], dtype=bool).sum())
+    return StepResult(
+        products={
+            "objects": table,
+            "object_traces": object_traces,
+            "object_orders": object_orders,
+            "object_box_radii": object_box_radii,
+            "object_skymask": object_skymask,
+        },
+        meta={
+            "n_objects": int(len(ordered_traces)),
+            "n_objects_masked": n_masked,
+            "object_fwhm": fwhm,
+            "object_snr_thresh": snr_thresh,
+        },
+        plots={"object_profiles": profiles_figure, "object_traces": traces_figure},
+        masked_orders=masked_orders,
+    )
+
+
+def _object_profile_figure(
+    diagnostics: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]]
+) -> go.Figure:
+    figure = go.Figure()
+    if not diagnostics:
+        figure.update_layout(title="Object spatial profiles")
+        return figure
+    index = max(diagnostics, key=lambda o: len(diagnostics[o][2]))
+    profile, snr, peaks = diagnostics[index]
+    samples = np.arange(profile.size)
+    figure.add_trace(
+        go.Scatter(x=samples, y=profile, mode="lines", name="profile")
+    )
+    figure.add_trace(
+        go.Scatter(x=samples, y=snr, mode="lines", name="S/N")
+    )
+    if peaks.size:
+        figure.add_trace(
+            go.Scatter(
+                x=peaks,
+                y=profile[peaks],
+                mode="markers",
+                marker={"color": "red", "size": 6},
+                name="peaks",
+            )
+        )
+    figure.update_layout(
+        title=f"Object spatial profile (order {index})",
+        xaxis_title="spatial sample",
+        yaxis_title="flux",
+    )
+    return figure
+
+
+def _object_traces_figure(
+    image: np.ndarray, object_traces: np.ndarray, object_orders: np.ndarray
+) -> go.Figure:
+    nspec = image.shape[0]
+    stride = max(1, nspec // 200)
+    figure = go.Figure(
+        data=go.Heatmap(
+            z=np.asarray(image, dtype=float),
+            colorscale="Gray",
+            colorbar={"title": "counts"},
+        )
+    )
+    rows = np.arange(0, nspec, stride)
+    for j in range(object_traces.shape[1]):
+        positions = object_traces[rows, j]
+        valid = np.isfinite(positions)
+        figure.add_trace(
+            go.Scatter(
+                x=positions[valid],
+                y=rows[valid],
+                mode="markers",
+                marker={"size": 2},
+                name=f"order {int(object_orders[j])}",
+                showlegend=False,
+            )
+        )
+    figure.update_layout(
+        title="Object traces",
+        xaxis_title="spatial",
+        yaxis_title="dispersion",
+    )
+    return figure
+
+
+def _sky_qa_figure(
+    panels: list[tuple[int, np.ndarray, np.ndarray, np.ndarray]]
+) -> go.Figure:
+    from plotly.subplots import make_subplots
+
+    if not panels:
+        figure = go.Figure()
+        figure.update_layout(title="Sky model QA")
+        return figure
+    titles: list[str] = []
+    for order, *_ in panels:
+        titles.extend([f"order {order} data", f"order {order} model", f"order {order} residual"])
+    figure = make_subplots(
+        rows=len(panels),
+        cols=3,
+        subplot_titles=titles,
+    )
+    for row, (_, data, model, residual) in enumerate(panels, start=1):
+        figure.add_trace(
+            go.Heatmap(z=data, colorscale="Viridis", showscale=False), row=row, col=1
+        )
+        figure.add_trace(
+            go.Heatmap(z=model, colorscale="Viridis", showscale=False), row=row, col=2
+        )
+        figure.add_trace(
+            go.Heatmap(z=residual, colorscale="RdBu", showscale=False), row=row, col=3
+        )
+    figure.update_layout(title="Sky model QA", height=350 * len(panels))
+    return figure
+
+
+def subtract_sky(
+    products: dict[str, Any],
+    meta: dict[str, Any],
+    params: dict[str, Any],
+) -> StepResult:
+    """Model and subtract the 2D sky background per order (step 7).
+
+    The sky is fit as a B-spline along the tilted spectral coordinate times a
+    polynomial along the fractional spatial coordinate, using only background
+    pixels (outside the object boxes). A local residual surface is then fit
+    around each traced object. The resulting sky model is subtracted and the
+    propagated variance is emitted alongside the sky-subtracted image.
+    """
+    image = products.get("science")
+    if image is None:
+        raise ValueError(
+            "subtract_sky requires a 'science' product; run process_science first"
+        )
+    traces_product = products.get("order_traces")
+    if traces_product is None:
+        raise ValueError(
+            "subtract_sky requires an 'order_traces' product; run trace_orders first"
+        )
+    image = np.asarray(image, dtype=float)
+    nspec, nspat = image.shape
+    ivar = products.get("science_ivar")
+    ivar = (
+        np.asarray(ivar, dtype=float)
+        if ivar is not None
+        else np.where(np.isfinite(image), 1.0, 0.0)
+    )
+    science_var = products.get("science_var")
+    science_var = (
+        np.asarray(science_var, dtype=float) if science_var is not None else 0.0 * image
+    )
+    science_mask = products.get("science_mask")
+    skymask = products.get("object_skymask")
+    if skymask is not None:
+        skymask = np.asarray(skymask, dtype=bool)
+
+    tilt_coeffs = products.get("tilt_coeffs")
+    spec_order = int(meta.get("tilt_spec_order", 3))
+    spat_order = int(meta.get("tilt_spat_order", 4))
+    spat_scale = float(meta.get("tilt_spat_scale", 10.0))
+
+    bspacing = float(params.get("sky_bspacing", max(15.0, nspec / 12.0)))
+    degree = int(params.get("sky_degree", 3))
+    npoly = int(params.get("sky_npoly", 2))
+    trim_edg = float(params.get("sky_trim_edg", 3.0))
+    do_local = bool(params.get("local_sky", True))
+    local_factor = float(params.get("local_window_factor", 1.5))
+
+    object_traces = products.get("object_traces")
+    object_orders = products.get("object_orders")
+    object_box_radii = products.get("object_box_radii")
+
+    sky_global = np.zeros_like(image)
+    sky_fit_var = np.zeros_like(image)
+    sky_pixels = np.zeros_like(image, dtype=bool)
+    n_sky_orders = 0
+
+    qa_panels: list[tuple[int, np.ndarray, np.ndarray, np.ndarray]] = []
+
+    cols = np.arange(nspat, dtype=float)[None, :]
+
+    for index, order in enumerate(FIRE_ORDER_NUMBERS):
+        order = int(order)
+        edges = _order_edges(traces_product, order, nspec)
+        if edges is None:
+            continue
+        left, right = edges
+        fit = None
+        if tilt_coeffs is not None and index < len(tilt_coeffs):
+            coeffs = np.asarray(tilt_coeffs[index], dtype=float)
+            if np.all(np.isfinite(coeffs)):
+                fit = build_tilt_fit(
+                    TiltFit(
+                        coeffs=coeffs,
+                        spec_order=spec_order,
+                        spat_order=spat_order,
+                        spec_scale=float(max(1, nspec - 1)),
+                        spat_scale=spat_scale,
+                        rms=float("nan"),
+                        nlines=0,
+                        tilt_angle=float("nan"),
+                        masked=False,
+                    )
+                )
+        spec_coord = tilted_coordinates(
+            nspec, nspat, left, right, fit, spat_scale=spat_scale
+        )
+        width = right - left
+        safe_width = np.where(width > 0, width, 1.0)
+        on = (cols >= left[:, None] + trim_edg) & (cols <= right[:, None] - trim_edg)
+        ximg = (cols - left[:, None]) / safe_width[:, None]
+        good = on & np.isfinite(image) & (ivar > 0)
+        if skymask is not None:
+            good &= skymask
+        if good.sum() < max(30, degree + npoly + 4):
+            continue
+
+        weights = np.sqrt(np.where(ivar > 0, ivar, 0.0))
+        surface = fit_sky_surface(
+            spec_coord[good],
+            ximg[good],
+            image[good],
+            weights=weights[good],
+            bspacing=bspacing,
+            degree=degree,
+            npoly=npoly,
+        )
+        sky_global[on] = surface.evaluate(spec_coord[on], ximg[on])
+        if np.isfinite(surface.rms):
+            # Added variance from the scatter of the sky-fit residuals.
+            sky_fit_var[on] = surface.rms**2
+        n_sky_orders += 1
+
+        if (
+            do_local
+            and object_traces is not None
+            and object_orders is not None
+            and object_traces.shape[1] > 0
+        ):
+            members = np.where(np.asarray(object_orders, dtype=int) == order)[0]
+            for j in members:
+                positions = np.asarray(object_traces[:, j], dtype=float)
+                if not np.any(np.isfinite(positions)):
+                    continue
+                radius = (
+                    float(object_box_radii[j]) * local_factor
+                    if object_box_radii is not None
+                    else 8.0
+                )
+                near = np.abs(cols - positions[:, None]) <= radius
+                window = near & on & np.isfinite(image) & (ivar > 0)
+                if skymask is not None:
+                    window &= skymask
+                if window.sum() < 20:
+                    continue
+                residual = image - sky_global
+                local_surface = fit_sky_surface(
+                    spec_coord[window],
+                    ximg[window],
+                    residual[window],
+                    weights=weights[window],
+                    bspacing=max(bspacing / 2.0, 5.0),
+                    degree=degree,
+                    npoly=min(1, npoly),
+                )
+                target = near & on
+                sky_global[target] += local_surface.evaluate(
+                    spec_coord[target], ximg[target]
+                )
+
+        sky_pixels |= on & (skymask if skymask is not None else True)
+
+        masked_image = np.where(on, image, np.nan)
+        masked_model = np.where(on, sky_global, np.nan)
+        masked_residual = np.where(on, image - sky_global, np.nan)
+        qa_panels.append((order, masked_image, masked_model, masked_residual))
+
+    science_sky = image - sky_global
+    science_sky_var = science_var + sky_fit_var
+    good_final = np.isfinite(science_sky)
+    if science_mask is not None:
+        good_final &= np.asarray(science_mask, dtype=bool)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        sky_ivar = np.where(
+            good_final,
+            1.0 / np.maximum(science_sky_var, 1e-12),
+            0.0,
+        )
+
+    qa = _sky_qa_figure(qa_panels)
+    residual_scatter = (
+        float(np.sqrt(np.mean(science_sky[sky_pixels] ** 2)))
+        if sky_pixels.any()
+        else float("nan")
+    )
+    return StepResult(
+        products={
+            "sky_model": sky_global,
+            "sky_fit_var": sky_fit_var,
+            "science_sky": science_sky,
+            "science_sky_var": science_sky_var,
+            "science_sky_ivar": sky_ivar,
+        },
+        meta={
+            "sky_bspacing": bspacing,
+            "sky_npoly": npoly,
+            "sky_local": bool(do_local),
+            "n_orders_sky_subtracted": int(n_sky_orders),
+            "sky_residual_rms": residual_scatter,
+        },
+        plots={"sky_model": qa},
+    )
+
+
 def register_engines() -> None:
-    """Register the implemented Step Engines (reduction steps 1-4)."""
+    """Register the implemented Step Engines (reduction steps 1-7)."""
     register_step_engine("prep_calibrations", prep_calibrations)
     register_step_engine("trace_orders", trace_orders)
     register_step_engine("calibrate_wavelengths", calibrate_wavelengths)
     register_step_engine("fit_tilts", fit_tilts)
+    register_step_engine("process_science", process_science)
+    register_step_engine("find_objects", find_objects)
+    register_step_engine("subtract_sky", subtract_sky)

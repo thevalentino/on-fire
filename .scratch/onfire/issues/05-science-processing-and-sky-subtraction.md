@@ -7,9 +7,9 @@ Implementation of science frame reduction (Step 5), object finding (Step 6), and
 
 **Status:** ready-for-agent
 
-- [ ] Applies flat-fielding, bad pixel masking, and pair differencing (A - B) or single-frame stare prep (`process_science`).
-- [ ] Detects spatial profiles, establishes object traces, and defines background extraction slits per order (`find_objects`).
-- [ ] Models and subtracts 2D sky background using 2D B-splines with tilted line coordinates (`subtract_sky`).
-- [ ] Emits intermediate FITS checkpoints with sky-subtracted 2D images and variance arrays.
-- [ ] Generates interactive Plotly QA figures showing 2D data, model, and residual heatmaps per order.
-- [ ] High-level tests verify both Pair Differencing and Stare Mode workflows, object detection, and residual statistics.
+- [x] Applies flat-fielding, bad pixel masking, and pair differencing (A - B) or single-frame stare prep (`process_science`).
+- [x] Detects spatial profiles, establishes object traces, and defines background extraction slits per order (`find_objects`).
+- [x] Models and subtracts 2D sky background using 2D B-splines with tilted line coordinates (`subtract_sky`).
+- [x] Emits intermediate FITS checkpoints with sky-subtracted 2D images and variance arrays.
+- [x] Generates interactive Plotly QA figures showing 2D data, model, and residual heatmaps per order.
+- [x] High-level tests verify both Pair Differencing and Stare Mode workflows, object detection, and residual statistics.
