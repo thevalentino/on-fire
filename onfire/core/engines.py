@@ -19,6 +19,13 @@ from onfire.core.calibrations import (
     combine_flats,
     normalize_flat,
 )
+from onfire.core.extract import (
+    boxcar_extract,
+    build_profile_image,
+    collapse_object_profile,
+    fit_object_profile,
+    optimal_extract,
+)
 from onfire.core.fire import (
     FIRE_NORDERS,
     FIRE_ORDER_NUMBERS,
@@ -1684,8 +1691,518 @@ def subtract_sky(
     )
 
 
+EXTRACTION_COLUMNS = (
+    "order",
+    "obj_id",
+    "snr",
+    "fwhm",
+    "box_radius",
+    "profile_kind",
+    "profile_center",
+    "profile_sigma",
+    "profile_fwhm",
+    "profile_rms",
+    "profile_coeffs",
+    "boxcar_flux",
+    "boxcar_var",
+    "boxcar_ivar",
+    "boxcar_npix",
+    "opt_flux",
+    "opt_var",
+    "opt_ivar",
+    "opt_chi2",
+    "opt_frac_use",
+)
+
+_EXTRACTION_MATRIX_KEYS = (
+    "boxcar_flux",
+    "boxcar_var",
+    "boxcar_ivar",
+    "boxcar_npix",
+    "opt_flux",
+    "opt_var",
+    "opt_ivar",
+    "opt_chi2",
+    "opt_frac_use",
+)
+
+
+def _positions_from_table(objects: Table, nspec: int) -> np.ndarray:
+    """Evaluate every object trace in an objects table into a 2D array."""
+    rows = np.arange(nspec, dtype=float)
+    positions = np.full((nspec, len(objects)), np.nan, dtype=float)
+    for j, row in enumerate(objects):
+        if bool(row["masked"]):
+            continue
+        coeff = np.asarray(row["trace_coeff"], dtype=float)
+        if not np.all(np.isfinite(coeff)):
+            continue
+        positions[:, j] = evaluate_trace(
+            coeff, float(row["xmid"]), float(row["xscale"]), rows
+        )
+    return positions
+
+
+def _pad_coeffs(coeffs: np.ndarray, width: int) -> np.ndarray:
+    padded = np.full(width, np.nan, dtype=float)
+    array = np.asarray(coeffs, dtype=float).ravel()
+    padded[: min(width, array.size)] = array[:width]
+    return padded
+
+
+def _extraction_table(
+    records: list[dict[str, Any]], nspec: int, profile_ncoeff: int
+) -> Table:
+    """Build the structured per-object extraction table."""
+    count = len(records)
+    table = Table()
+    table["order"] = np.asarray([r["order"] for r in records], dtype=np.int16)
+    table["obj_id"] = np.asarray([r["obj_id"] for r in records], dtype=np.int32)
+    table["snr"] = np.asarray([r["snr"] for r in records], dtype=np.float32)
+    table["fwhm"] = np.asarray([r["fwhm"] for r in records], dtype=np.float32)
+    table["box_radius"] = np.asarray([r["box_radius"] for r in records], dtype=np.float32)
+    table["profile_kind"] = np.asarray(
+        [r["profile_kind"] for r in records], dtype=str
+    )
+    table["profile_center"] = np.asarray(
+        [r["profile_center"] for r in records], dtype=np.float32
+    )
+    table["profile_sigma"] = np.asarray(
+        [r["profile_sigma"] for r in records], dtype=np.float32
+    )
+    table["profile_fwhm"] = np.asarray(
+        [r["profile_fwhm"] for r in records], dtype=np.float32
+    )
+    table["profile_rms"] = np.asarray([r["profile_rms"] for r in records], dtype=np.float32)
+    table["profile_coeffs"] = np.asarray(
+        [_pad_coeffs(r["profile_coeffs"], profile_ncoeff) for r in records],
+        dtype=float,
+    ).reshape(count, profile_ncoeff)
+    for name in _EXTRACTION_MATRIX_KEYS:
+        table[name] = np.asarray(
+            [np.asarray(r[name], dtype=float) for r in records], dtype=float
+        ).reshape(count, nspec)
+    return table[np.asarray(EXTRACTION_COLUMNS, dtype=str).tolist()]
+
+
+def _record_from_table_row(table: Table, row: int, nspec: int) -> dict[str, Any]:
+    """Recover a mutable record dict from a stored extraction table row."""
+    record: dict[str, Any] = {
+        "order": int(table["order"][row]),
+        "obj_id": int(table["obj_id"][row]),
+        "snr": float(table["snr"][row]),
+        "fwhm": float(table["fwhm"][row]),
+        "box_radius": float(table["box_radius"][row]),
+        "profile_kind": str(table["profile_kind"][row]),
+        "profile_center": float(table["profile_center"][row]),
+        "profile_sigma": float(table["profile_sigma"][row]),
+        "profile_fwhm": float(table["profile_fwhm"][row]),
+        "profile_rms": float(table["profile_rms"][row]),
+        "profile_coeffs": np.asarray(table["profile_coeffs"][row], dtype=float),
+    }
+    for name in _EXTRACTION_MATRIX_KEYS:
+        values = np.asarray(table[name][row], dtype=float)
+        record[name] = values[:nspec]
+    return record
+
+
+def _blank_record(order: int, obj_id: int, nspec: int, box_radius: float) -> dict[str, Any]:
+    """Return an all-NaN extraction record for an unusable object."""
+    record: dict[str, Any] = {
+        "order": order,
+        "obj_id": obj_id,
+        "snr": float("nan"),
+        "fwhm": float("nan"),
+        "box_radius": float(box_radius),
+        "profile_kind": "none",
+        "profile_center": float("nan"),
+        "profile_sigma": float("nan"),
+        "profile_fwhm": float("nan"),
+        "profile_rms": float("nan"),
+        "profile_coeffs": np.array([], dtype=float),
+    }
+    for name in _EXTRACTION_MATRIX_KEYS:
+        record[name] = np.full(nspec, np.nan, dtype=float)
+    return record
+
+
+def _extract_object(
+    image: np.ndarray,
+    ivar: np.ndarray,
+    mask: np.ndarray,
+    trace: np.ndarray,
+    *,
+    box_radius: float,
+    profile_half_width: float,
+    profile_model: str,
+    profile_order: int,
+    min_frac_use: float,
+    cr_sigclip: float | None,
+    cr_niter: int,
+) -> tuple[Any, Any, Any, np.ndarray, np.ndarray, np.ndarray]:
+    """Extract one object with boxcar and optimal methods, returning diagnostics."""
+    box = boxcar_extract(image, ivar, trace, box_radius, mask=mask)
+    offsets, template = collapse_object_profile(
+        image, ivar, trace, half_width=profile_half_width, mask=mask
+    )
+    fit = fit_object_profile(
+        offsets, template, model=profile_model, order=profile_order
+    )
+    profile_image = build_profile_image(
+        fit, trace, image.shape, half_width=profile_half_width, mask=mask
+    )
+    optimal = optimal_extract(
+        image,
+        ivar,
+        profile_image,
+        mask=mask,
+        min_frac_use=min_frac_use,
+        sigclip=cr_sigclip,
+        niter=cr_niter,
+    )
+    return box, optimal, fit, offsets, template, profile_image
+
+
+def _record_from_extraction(
+    order: int,
+    obj_id: int,
+    obj_row: Any,
+    box_radius: float,
+    box: Any,
+    optimal: Any,
+    fit: Any,
+) -> dict[str, Any]:
+    """Assemble a stored extraction record from engine outputs."""
+    return {
+        "order": int(order),
+        "obj_id": int(obj_id),
+        "snr": float(obj_row["snr"]),
+        "fwhm": float(obj_row["fwhm"]),
+        "box_radius": float(box_radius),
+        "profile_kind": str(fit.kind),
+        "profile_center": float(fit.coeffs[1]) if fit.kind == "gaussian" else float(fit.coeffs[0]),
+        "profile_sigma": float(fit.sigma),
+        "profile_fwhm": float(fit.fwhm),
+        "profile_rms": float(fit.rms),
+        "profile_coeffs": np.asarray(fit.coeffs, dtype=float),
+        "boxcar_flux": box.flux,
+        "boxcar_var": box.var,
+        "boxcar_ivar": box.ivar,
+        "boxcar_npix": box.npix,
+        "opt_flux": optimal.flux,
+        "opt_var": optimal.var,
+        "opt_ivar": optimal.ivar,
+        "opt_chi2": optimal.chi2,
+        "opt_frac_use": optimal.frac_use,
+    }
+
+
+def _extraction_lines_figure(
+    records: list[dict[str, Any]],
+    *,
+    optimal_key: str,
+    boxcar_key: str,
+    title: str,
+    yaxis_title: str,
+    transform: Any = None,
+) -> go.Figure:
+    """Plot an optimal and a dashed boxcar curve for every extracted object."""
+    transform = (lambda values: values) if transform is None else transform
+    figure = go.Figure()
+    for record in records:
+        pixel = np.arange(np.asarray(record[optimal_key]).size)
+        label = f"order {record['order']} obj {record['obj_id']}"
+        figure.add_trace(
+            go.Scatter(
+                x=pixel,
+                y=transform(np.asarray(record[optimal_key], dtype=float)),
+                mode="lines",
+                name=f"{label} optimal",
+            )
+        )
+        figure.add_trace(
+            go.Scatter(
+                x=pixel,
+                y=transform(np.asarray(record[boxcar_key], dtype=float)),
+                mode="lines",
+                line={"dash": "dot", "width": 1},
+                name=f"{label} boxcar",
+                showlegend=False,
+            )
+        )
+    figure.update_layout(title=title, xaxis_title="dispersion pixel", yaxis_title=yaxis_title)
+    return figure
+
+
+def _extraction_spectra_figure(records: list[dict[str, Any]]) -> go.Figure:
+    """Plot the boxcar and optimal 1D spectra of every extracted object."""
+    return _extraction_lines_figure(
+        records,
+        optimal_key="opt_flux",
+        boxcar_key="boxcar_flux",
+        title="Extracted 1D spectra",
+        yaxis_title="flux (counts)",
+    )
+
+
+def _noise(values: np.ndarray) -> np.ndarray:
+    """Return the flux uncertainty from a variance vector."""
+    return np.sqrt(np.clip(values, 0.0, None))
+
+
+def _extraction_noise_figure(records: list[dict[str, Any]]) -> go.Figure:
+    """Plot the propagated noise vectors of every extracted object."""
+    return _extraction_lines_figure(
+        records,
+        optimal_key="opt_var",
+        boxcar_key="boxcar_var",
+        title="Extraction noise vectors",
+        yaxis_title="flux uncertainty (counts)",
+        transform=_noise,
+    )
+
+
+def _extraction_profile_figure(profiles: list[tuple[str, np.ndarray, np.ndarray, Any]]) -> go.Figure:
+    """Plot the collapsed spatial profile samples and their model fits."""
+    figure = go.Figure()
+    for label, offsets, template, fit in profiles:
+        figure.add_trace(
+            go.Scatter(
+                x=offsets,
+                y=template,
+                mode="markers",
+                marker={"size": 3},
+                name=f"{label} data",
+            )
+        )
+        smooth_offsets = np.linspace(float(offsets.min()), float(offsets.max()), 200)
+        figure.add_trace(
+            go.Scatter(
+                x=smooth_offsets,
+                y=fit.evaluate(smooth_offsets),
+                mode="lines",
+                name=f"{label} fit",
+            )
+        )
+    figure.update_layout(
+        title="Object spatial profile fits",
+        xaxis_title="spatial offset (pixels)",
+        yaxis_title="profile flux (counts)",
+    )
+    return figure
+
+
+def extract_1d(
+    products: dict[str, Any],
+    meta: dict[str, Any],
+    params: dict[str, Any],
+) -> StepResult:
+    """Perform boxcar and optimal 1D extraction per order (reduction step 8).
+
+    Every object traced by :func:`find_objects` is extracted from the
+    sky-subtracted image with both a boxcar sum and Horne optimal extraction.
+    The optimal extraction fits a spatial profile to each object and rejects
+    cosmic rays, propagating formal variance and bad-pixel flags throughout.
+    When ``params['order']`` targets a single order and a previous
+    ``extractions`` product exists, only that order is re-extracted while all
+    other orders keep their results.
+
+    Args:
+        products: State products; must contain ``science_sky``, ``objects`` and
+            ``order_traces``.
+        meta: State metadata (unused).
+        params: Algorithmic parameters, including optional ``order`` targeting.
+
+    Returns:
+        A :class:`StepResult` with a structured ``extractions`` table, 2D flux,
+        variance, inverse-variance, mask, and cosmic-ray products, and QA
+        figures for spectra, noise, and spatial profiles.
+    """
+    image = products.get("science_sky")
+    if image is None:
+        raise ValueError(
+            "extract_1d requires a 'science_sky' product; run subtract_sky first"
+        )
+    objects = products.get("objects")
+    if objects is None:
+        raise ValueError(
+            "extract_1d requires an 'objects' product; run find_objects first"
+        )
+    traces_product = products.get("order_traces")
+    if traces_product is None:
+        raise ValueError(
+            "extract_1d requires an 'order_traces' product; run trace_orders first"
+        )
+    image = np.asarray(image, dtype=float)
+    nspec, nspat = image.shape
+    ivar = products.get("science_sky_ivar")
+    ivar = (
+        np.asarray(ivar, dtype=float)
+        if ivar is not None
+        else np.where(np.isfinite(image), 1.0, 0.0)
+    )
+    base_mask = np.isfinite(image) & np.isfinite(ivar) & (ivar > 0)
+    science_mask = products.get("science_mask")
+    if science_mask is not None:
+        base_mask &= np.asarray(science_mask, dtype=bool)
+
+    object_traces = products.get("object_traces")
+    positions = (
+        np.asarray(object_traces, dtype=float)
+        if object_traces is not None and np.asarray(object_traces).ndim == 2
+        else _positions_from_table(objects, nspec)
+    )
+    if positions.shape[1] != len(objects):
+        positions = _positions_from_table(objects, nspec)
+
+    orders = np.asarray(objects["order"], dtype=int)
+    obj_ids = np.asarray(objects["obj_id"], dtype=int)
+    object_box_radii = products.get("object_box_radii")
+    object_box_radii = (
+        np.asarray(object_box_radii, dtype=float)
+        if object_box_radii is not None
+        else np.asarray(objects["box_radius"], dtype=float)
+    )
+
+    box_radius_param = params.get("box_radius")
+    profile_model = str(params.get("profile_model", "gaussian"))
+    profile_order = int(params.get("profile_order", 2))
+    min_frac_use = float(params.get("min_frac_use", 0.5))
+    cr_sigclip_param = params.get("cr_sigclip", 5.0)
+    cr_sigclip = None if cr_sigclip_param is None else float(cr_sigclip_param)
+    cr_niter = int(params.get("cr_niter", 3))
+    profile_half_width_param = params.get("profile_half_width")
+
+    target_index = _target_order_index(params)
+    existing = products.get("extractions")
+    reuse = (
+        target_index is not None
+        and existing is not None
+        and len(existing) == len(objects)
+    )
+    target_order = int(FIRE_ORDER_NUMBERS[target_index]) if reuse else None
+
+    records: list[dict[str, Any]] = []
+    profiles: list[tuple[str, np.ndarray, np.ndarray, Any]] = []
+    cr_images: list[np.ndarray] = []
+    masked_orders: dict[int, str] = {}
+    columns = np.arange(nspat, dtype=float)[None, :]
+
+    for j in range(len(objects)):
+        order = int(orders[j])
+        obj_id = int(obj_ids[j])
+        box_radius = (
+            float(box_radius_param)
+            if box_radius_param is not None
+            else float(object_box_radii[j])
+        )
+        if target_order is not None and order != target_order:
+            records.append(_record_from_table_row(existing, j, nspec))
+            continue
+        if bool(objects["masked"][j]) or not np.any(np.isfinite(positions[:, j])):
+            records.append(_blank_record(order, obj_id, nspec, box_radius))
+            continue
+        edges = _order_edges(traces_product, order, nspec)
+        if edges is None:
+            records.append(_blank_record(order, obj_id, nspec, box_radius))
+            masked_orders.setdefault(order, "no order trace")
+            continue
+        left, right = edges
+        on_order = base_mask & (columns >= left[:, None]) & (columns <= right[:, None])
+        half_width = (
+            float(profile_half_width_param)
+            if profile_half_width_param is not None
+            else max(3.0, abs(box_radius))
+        )
+        box, optimal, fit, offsets, template, _profile_image = _extract_object(
+            image,
+            ivar,
+            on_order,
+            positions[:, j],
+            box_radius=box_radius,
+            profile_half_width=half_width,
+            profile_model=profile_model,
+            profile_order=profile_order,
+            min_frac_use=min_frac_use,
+            cr_sigclip=cr_sigclip,
+            cr_niter=cr_niter,
+        )
+        records.append(
+            _record_from_extraction(order, obj_id, objects[j], box_radius, box, optimal, fit)
+        )
+        profiles.append((f"order {order} obj {obj_id}", offsets, template, fit))
+        cr_images.append(optimal.cr_mask)
+
+    profile_ncoeff = max(
+        (np.asarray(r["profile_coeffs"]).size for r in records), default=0
+    )
+    profile_ncoeff = max(profile_ncoeff, 1)
+    table = _extraction_table(records, nspec, profile_ncoeff)
+
+    def _matrix(key: str, fill: float) -> np.ndarray:
+        matrix = np.full((nspec, len(records)), fill, dtype=float)
+        for j, record in enumerate(records):
+            values = np.asarray(record[key], dtype=float)
+            if values.size == nspec:
+                matrix[:, j] = values
+        return matrix
+
+    combined_cr = np.zeros((nspec, nspat), dtype=bool)
+    for cr in cr_images:
+        if cr.shape == combined_cr.shape:
+            combined_cr |= cr
+
+    boxcar_mask = np.zeros((nspec, len(records)), dtype=bool)
+    opt_mask = np.zeros((nspec, len(records)), dtype=bool)
+    for j, record in enumerate(records):
+        boxcar_mask[:, j] = np.isfinite(record["boxcar_flux"])
+        opt_mask[:, j] = np.isfinite(record["opt_flux"])
+
+    n_extracted = int(np.any(opt_mask, axis=0).sum()) if records else 0
+    extracted_orders = {
+        int(records[j]["order"]) for j in range(len(records)) if np.any(opt_mask[:, j])
+    }
+
+    spectra_figure = _extraction_spectra_figure(records)
+    noise_figure = _extraction_noise_figure(records)
+    profile_figure = _extraction_profile_figure(profiles)
+
+    return StepResult(
+        products={
+            "extractions": table,
+            "boxcar_flux": _matrix("boxcar_flux", np.nan),
+            "boxcar_var": _matrix("boxcar_var", np.nan),
+            "boxcar_ivar": _matrix("boxcar_ivar", 0.0),
+            "boxcar_npix": _matrix("boxcar_npix", 0.0),
+            "boxcar_mask": boxcar_mask,
+            "opt_flux": _matrix("opt_flux", np.nan),
+            "opt_var": _matrix("opt_var", np.nan),
+            "opt_ivar": _matrix("opt_ivar", 0.0),
+            "opt_chi2": _matrix("opt_chi2", np.nan),
+            "opt_frac_use": _matrix("opt_frac_use", 0.0),
+            "opt_mask": opt_mask,
+            "extraction_cr_mask": combined_cr,
+        },
+        meta={
+            "n_objects_extracted": n_extracted,
+            "n_orders_extracted": len(extracted_orders),
+            "n_cosmic_rays": int(combined_cr.sum()),
+            "extraction_profile_model": profile_model,
+            "extraction_profile_order": profile_order,
+            "extraction_min_frac_use": min_frac_use,
+            "extraction_cr_sigclip": cr_sigclip,
+        },
+        plots={
+            "extraction_spectra": spectra_figure,
+            "extraction_noise": noise_figure,
+            "extraction_profiles": profile_figure,
+        },
+        masked_orders=masked_orders,
+    )
+
+
 def register_engines() -> None:
-    """Register the implemented Step Engines (reduction steps 1-7)."""
+    """Register the implemented Step Engines (reduction steps 1-8)."""
     register_step_engine("prep_calibrations", prep_calibrations)
     register_step_engine("trace_orders", trace_orders)
     register_step_engine("calibrate_wavelengths", calibrate_wavelengths)
@@ -1693,3 +2210,4 @@ def register_engines() -> None:
     register_step_engine("process_science", process_science)
     register_step_engine("find_objects", find_objects)
     register_step_engine("subtract_sky", subtract_sky)
+    register_step_engine("extract_1d", extract_1d)
