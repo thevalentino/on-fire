@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "onfire"
+version = "0.1.0"
+description = "Streamlined data reduction pipeline for Magellan/FIRE echelle spectroscopy"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "numpy>=1.24",
+    "astropy>=6.0",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0",
+]
+
+[project.scripts]
+onfire = "onfire.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["onfire*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

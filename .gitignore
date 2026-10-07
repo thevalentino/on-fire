@@ -1,0 +1,13 @@
+# Vendored PypeIt reference checkout (2.1 GB) - not part of the onfire package
+PypeIt/
+
+# Python build and cache artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.coverage
+htmlcov/
