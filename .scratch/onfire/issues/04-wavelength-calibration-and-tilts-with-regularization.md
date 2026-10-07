@@ -7,9 +7,9 @@ Implementation of wavelength calibration (Step 3) and spectral line tilt modelin
 
 **Status:** ready-for-agent
 
-- [ ] Bundles and references FIRE wavelength archive templates and line lists without external network requirements.
-- [ ] Performs line detection and 1D wavelength calibration across all 21 orders (`calibrate_wavelengths`).
-- [ ] Models 2D spectral tilts along orders and fits spatial-spectral distortion surfaces (`fit_tilts`).
-- [ ] Supports interactive single-order execution with cross-order regularization, as well as full global recompute.
-- [ ] Generates interactive Plotly QA plots showing wavelength fit residuals and arc line identifications.
-- [ ] High-level tests verify line matching, tilt angle derivation, and single-order re-execution.
+- [x] Bundles and references FIRE wavelength archive templates and line lists without external network requirements.
+- [x] Performs line detection and 1D wavelength calibration across all 21 orders (`calibrate_wavelengths`).
+- [x] Models 2D spectral tilts along orders and fits spatial-spectral distortion surfaces (`fit_tilts`).
+- [x] Supports interactive single-order execution with cross-order regularization, as well as full global recompute.
+- [x] Generates interactive Plotly QA plots showing wavelength fit residuals and arc line identifications.
+- [x] High-level tests verify line matching, tilt angle derivation, and single-order re-execution.

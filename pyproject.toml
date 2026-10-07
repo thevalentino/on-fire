@@ -27,5 +27,8 @@ onfire = "onfire.cli:main"
 [tool.setuptools.packages.find]
 include = ["onfire*"]
 
+[tool.setuptools.package-data]
+"onfire.data" = ["reid_arxiv/*.fits", "arc_lines/*.dat"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
