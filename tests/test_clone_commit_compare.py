@@ -476,3 +476,67 @@ def test_commit_drops_qa_artifacts_of_discarded_steps(make_state):
     baseline.commit(clone)
 
     assert set(baseline.plots) == {"qa"}
+
+
+def _per_order_plot_engine(_products, _meta, params):
+    order = params.get("order", 11)
+    return StepResult(
+        products={"wave": np.array([1.0])},
+        plots={f"qa_{order}": go.Figure(go.Scatter(x=[0, 1], y=[order, order]))},
+    )
+
+
+def test_single_order_rerun_keeps_the_other_orders_qa_artifacts(make_state):
+    register_step_engine("calibrate_wavelengths", _per_order_plot_engine)
+    baseline = make_state()
+    baseline.run_step("calibrate_wavelengths", order=11)
+    baseline.run_step("calibrate_wavelengths", order=12)
+
+    clone = baseline.run_step("calibrate_wavelengths", clone=True, order=13)
+
+    assert set(clone.plots) == {"qa_11", "qa_12", "qa_13"}
+    assert set(baseline.plots) == {"qa_11", "qa_12"}
+
+
+def test_single_order_rerun_on_the_baseline_keeps_other_orders_qa_artifacts(make_state):
+    register_step_engine("calibrate_wavelengths", _per_order_plot_engine)
+    baseline = make_state()
+    baseline.run_step("calibrate_wavelengths", order=11)
+    baseline.run_step("calibrate_wavelengths", order=12)
+
+    assert set(baseline.plots) == {"qa_11", "qa_12"}
+
+
+def test_cross_order_step_is_discarded_whole_when_any_input_order_is_stale(make_state):
+    register_step_engine("calibrate_wavelengths", _engine(wave=1.0))
+
+    def coadd(_p, _m, _q):
+        return StepResult(
+            products={"spliced": Table({"order": [11, 12, 13], "flux": [1.0, 2.0, 3.0]})}
+        )
+
+    register_step_engine("coadd_orders", coadd)
+    baseline = make_state()
+    baseline.run_step("calibrate_wavelengths")
+    baseline.run_step("coadd_orders")
+    clone = baseline.run_step("calibrate_wavelengths", clone=True, order=13)
+
+    baseline.commit(clone)
+
+    assert "spliced" not in baseline.products
+    assert baseline.step_name == "calibrate_wavelengths"
+
+
+def test_commit_carries_the_clones_parameter_config(make_state):
+    _register_chain()
+    baseline = make_state()
+    baseline.run_step("calibrate_wavelengths")
+    clone = baseline.clone()
+    clone.config["steps"]["calibrate_wavelengths"] = {"value": 4.0}
+    clone.run_step("calibrate_wavelengths")
+
+    baseline.commit(clone)
+
+    assert baseline.config["steps"]["calibrate_wavelengths"] == {"value": 4.0}
+    assert baseline.products["wave"][0] == 4.0
+    assert baseline.config is not clone.config

@@ -28,6 +28,10 @@ STEP_SEQUENCE: tuple[str, ...] = (
     "extinction_correct",
 )
 
+# Steps that combine every order into one product: any stale input order makes
+# the whole product stale, so it can never be trimmed order by order.
+CROSS_ORDER_STEPS: frozenset[str] = frozenset({"coadd_orders", "extinction_correct"})
+
 
 def step_ordinal(name: str) -> int:
     """Return the 1-based position of ``name`` in the reduction sequence."""

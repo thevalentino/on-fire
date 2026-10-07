@@ -25,7 +25,7 @@ The canonical Intermediate State that a State Clone was cloned from and that dow
 _Avoid_: Original, master state, main state
 
 **Commit**:
-Promoting a State Clone to become the Baseline by replacing it wholesale, discarding all products downstream of the committed step.
+Replacing the Baseline wholesale with a State Clone, discarding the products still marked Stale on that clone.
 _Avoid_: Overwrite, merge, promote, apply
 
 **Stale**:

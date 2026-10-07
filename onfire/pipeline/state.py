@@ -22,6 +22,7 @@ from onfire.setup.table import FrameTable
 
 from onfire.pipeline.config import load_config
 from onfire.pipeline.steps import (
+    CROSS_ORDER_STEPS,
     StepResult,
     get_step_comparison,
     get_step_engine,
@@ -168,7 +169,7 @@ class ReductionState:
         return clone
 
     def commit(self, clone: "ReductionState", *, force: bool = False) -> None:
-        """Promote a State Clone to become this Baseline, replacing it wholesale.
+        """Replace this Baseline wholesale with a State Clone.
 
         The Baseline object is mutated in place and the ``clone`` is left
         unchanged. Products still marked Stale on the clone are discarded and the
@@ -198,6 +199,9 @@ class ReductionState:
                 )
         snapshot = copy.deepcopy(clone)
         snapshot._discard_stale()
+        self.frames = snapshot.frames
+        self.config = snapshot.config
+        self.source = snapshot.source
         self.products = snapshot.products
         self.meta = snapshot.meta
         self.plots = snapshot.plots
@@ -245,7 +249,7 @@ class ReductionState:
         recorded = {*self.provenance.values(), *self.plot_steps.values()}
         later = {step for step in recorded if step > ordinal}
         for step in later:
-            if order is None:
+            if order is None or step_name(step) in CROSS_ORDER_STEPS:
                 self.stale[step] = None
             elif step not in self.stale or self.stale[step] is not None:
                 self.stale[step] = (self.stale.get(step) or set()) | {int(order)}
@@ -320,13 +324,13 @@ class ReductionState:
         transmission and the corrected spectrum of each available correction.
         When ``select`` names a method (``"empirical"`` or ``"grid"``), that
         candidate's transmission, flux, variance, inverse variance, and mask are
-        promoted to the canonical ``telluric_*`` products and the ``telluric``
+        copied to the canonical ``telluric_*`` products and the ``telluric``
         table's method column is updated.
 
         Args:
             select: Method to select into the state, or ``None`` to only render.
-            commit: Deprecated alias of ``select``; "commit" now means promoting a
-                State Clone to the Baseline (see :meth:`commit`).
+            commit: Deprecated alias of ``select``; "commit" now means replacing the
+                Baseline with a State Clone (see :meth:`commit`).
 
         Returns:
             The comparison :class:`~plotly.graph_objects.Figure`, also attached
@@ -486,11 +490,13 @@ class ReductionState:
 
         target.products.update(result.products)
         target.meta.update(result.meta)
-        # The step's earlier QA Artifacts no longer describe its products.
-        for plot, plot_step in list(target.plot_steps.items()):
-            if plot_step == ordinal:
-                target.plots.pop(plot, None)
-                del target.plot_steps[plot]
+        if order is None:
+            # A full run supersedes the step's earlier QA Artifacts; a
+            # single-order run only replaces the artifacts it re-creates.
+            for plot, plot_step in list(target.plot_steps.items()):
+                if plot_step == ordinal:
+                    target.plots.pop(plot, None)
+                    del target.plot_steps[plot]
         if qa:
             target.plots.update(result.plots)
         if order is not None and int(order) not in result.masked_orders:
