@@ -1,0 +1,3 @@
+# Whole-State Commit with Deferred Invalidation
+
+We decided that promoting a State Clone replaces the Baseline wholesale, in memory and in place, rather than merging individual orders or steps from the clone. Re-running a step marks later products Stale per order instead of discarding them, and only Commit drops what is still Stale. A clone whose Baseline has changed since it was cloned is refused unless forced. This keeps clones faithful experiment copies that can be compared against, and makes Commit the single destructive moment, at the cost of users re-running forward after a Commit and of no partial-order merging between states.

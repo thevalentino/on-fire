@@ -11,7 +11,7 @@ The file is a Multi-Extension FITS (MEF) container:
 * one ``BinTableHDU`` per Astropy table product.
 * ``ONFIREMETA`` -- a single-row table holding the step ordinal, the step name,
   the Frame Table as fixed-width text, and the Parameter Config, scalar
-  metadata, and Order Mask as JSON.
+  metadata, Order Mask, product provenance, and Stale marks as JSON.
 
 Plotly figures are intentionally not serialized here; they are written as
 standalone HTML by :meth:`ReductionState.save_plots`.
@@ -48,6 +48,25 @@ def _dumps(obj: Any) -> str:
     return json.dumps(obj, default=_json_default, sort_keys=True)
 
 
+def _stale_to_json(stale: dict[int, Any]) -> dict[str, Any]:
+    return {
+        str(step): None if orders is None else sorted(orders)
+        for step, orders in stale.items()
+    }
+
+
+def _stale_from_json(data: dict[str, Any]) -> dict[int, Any]:
+    return {
+        int(step): None if orders is None else {int(o) for o in orders}
+        for step, orders in data.items()
+    }
+
+
+def _optional_json(row: Any, names: list[str], column: str) -> Any:
+    """Read a JSON column, tolerating checkpoints written before it existed."""
+    return json.loads(str(row[column])) if column in names else {}
+
+
 def _product_hdu(name: str, value: Any) -> fits.hdu.base.ExtensionHDU:
     if isinstance(value, np.ndarray):
         dtype = value.dtype
@@ -76,6 +95,8 @@ def _meta_hdu(state: ReductionState) -> fits.BinTableHDU:
         "config_json": [_dumps(state.config)],
         "meta_json": [_dumps(state.meta)],
         "order_mask_json": [_dumps(state.order_mask.to_dict())],
+        "provenance_json": [_dumps(state.provenance)],
+        "stale_json": [_dumps(_stale_to_json(state.stale))],
     }
     hdu = fits.BinTableHDU(AstropyTable(columns))
     hdu.name = _META_EXTNAME
@@ -108,6 +129,7 @@ def read_checkpoint(path: str | Path) -> ReductionState:
     with fits.open(Path(path), memmap=False) as hdul:
         meta_hdu = hdul[_META_EXTNAME]
         row = meta_hdu.data[0]
+        columns = meta_hdu.columns.names
 
         products: dict[str, Any] = {}
         for hdu in hdul:
@@ -131,4 +153,9 @@ def read_checkpoint(path: str | Path) -> ReductionState:
             step=int(row["step"]),
             order_mask=OrderMask.from_dict(json.loads(str(row["order_mask_json"]))),
             source=str(row["source"]),
+            provenance={
+                key: int(step)
+                for key, step in _optional_json(row, columns, "provenance_json").items()
+            },
+            stale=_stale_from_json(_optional_json(row, columns, "stale_json")),
         )

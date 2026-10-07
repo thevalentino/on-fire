@@ -77,6 +77,7 @@ class StepEngine(Protocol):
 
 
 _REGISTRY: dict[str, StepEngine] = {}
+_COMPARISONS: dict[str, Callable[[Any, Any], Any]] = {}
 
 
 def register_step_engine(name: str, engine: StepEngine) -> None:
@@ -102,6 +103,22 @@ def registered_steps() -> tuple[str, ...]:
     return tuple(name for name in STEP_SEQUENCE if name in _REGISTRY)
 
 
+def register_step_comparison(name: str, builder: Callable[[Any, Any], Any]) -> None:
+    """Register a bespoke comparison figure builder for reduction step ``name``.
+
+    ``builder(state, other)`` receives the two states being compared and returns
+    a Plotly figure. It replaces the default QA Artifact pairing for that step.
+    """
+    step_ordinal(name)  # validates the name against the canonical sequence
+    _COMPARISONS[name] = builder
+
+
+def get_step_comparison(name: str) -> Callable[[Any, Any], Any] | None:
+    """Return the registered comparison builder for ``name``, if any."""
+    return _COMPARISONS.get(name)
+
+
 def clear_step_engines() -> None:
-    """Remove all registered Step Engines, primarily for test isolation."""
+    """Remove all registered Step Engines and comparisons, for test isolation."""
     _REGISTRY.clear()
+    _COMPARISONS.clear()

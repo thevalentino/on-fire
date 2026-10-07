@@ -406,7 +406,7 @@ def test_telluric_correct_requires_flux_calibrated_input():
 # --------------------------------------------------------------------------- #
 
 
-def test_state_compare_telluric_renders_and_commits(tmp_path):
+def test_state_compare_telluric_renders_and_selects(tmp_path):
     products, _, _, _ = _telluric_products()
     state = ReductionState(FrameTable.from_frames([]), {})
     state.products.update(products)
@@ -424,7 +424,7 @@ def test_state_compare_telluric_renders_and_commits(tmp_path):
     # Rendering alone does not change the committed correction.
     np.testing.assert_allclose(state.products["telluric_flux"], empirical_flux, equal_nan=True)
 
-    state.compare_telluric(commit="grid")
+    state.compare_telluric(select="grid")
 
     assert state.meta["telluric_method"] == "grid"
     assert str(state.products["telluric"]["method"][0]) == "grid"

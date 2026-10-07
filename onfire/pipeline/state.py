@@ -10,17 +10,20 @@ only manages state (ADR 0003).
 from __future__ import annotations
 
 import copy
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 import numpy as np
+from astropy.table import Table
 
 from onfire.setup.table import FrameTable
 
 from onfire.pipeline.config import load_config
 from onfire.pipeline.steps import (
     StepResult,
+    get_step_comparison,
     get_step_engine,
     step_name,
     step_ordinal,
@@ -75,6 +78,11 @@ class ReductionState:
         order_mask: Flags marking unusable orders.
         plots: Live Plotly figures attached as QA artifacts, keyed by name.
         source: Provenance string, typically the Frame Table path.
+        provenance: The step ordinal that last produced each data product.
+        plot_steps: The step ordinal that produced each attached QA artifact.
+        stale: Steps whose products are out of date because an earlier step was
+            re-run, mapped to the affected orders (``None`` means every order).
+            Stale products are kept until a Commit discards them.
     """
 
     frames: FrameTable
@@ -85,6 +93,22 @@ class ReductionState:
     order_mask: OrderMask = field(default_factory=OrderMask)
     plots: dict[str, "Figure"] = field(default_factory=dict)
     source: str = ""
+    provenance: dict[str, int] = field(default_factory=dict)
+    plot_steps: dict[str, int] = field(default_factory=dict)
+    stale: dict[int, Optional[set[int]]] = field(default_factory=dict)
+    # Session-local lineage: never persisted, so each loaded state is its own
+    # lineage and a clone can only be committed back to the state it came from.
+    _uid: str = field(
+        default_factory=lambda: uuid.uuid4().hex,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _parent_uid: Optional[str] = field(
+        default=None, init=False, repr=False, compare=False
+    )
+    _base_revision: int = field(default=0, init=False, repr=False, compare=False)
+    _revision: int = field(default=0, init=False, repr=False, compare=False)
 
     @classmethod
     def from_files(
@@ -136,35 +160,194 @@ class ReductionState:
         The clone is a deep copy, so mutating its data products, metadata, order
         mask, or Plotly figures never touches this baseline state.
         """
-        return copy.deepcopy(self)
+        clone = copy.deepcopy(self)
+        clone._uid = uuid.uuid4().hex
+        clone._parent_uid = self._uid
+        clone._base_revision = self._revision
+        clone._revision = 0
+        return clone
+
+    def commit(self, clone: "ReductionState", *, force: bool = False) -> None:
+        """Promote a State Clone to become this Baseline, replacing it wholesale.
+
+        The Baseline object is mutated in place and the ``clone`` is left
+        unchanged. Products still marked Stale on the clone are discarded and the
+        recorded progress is rewound to the last step with no Stale products.
+        Nothing is written to disk.
+
+        Args:
+            clone: A State Clone made from this state with :meth:`clone` or
+                ``run_step(..., clone=True)``.
+            force: Commit even if the clone is from an unrelated state or this
+                Baseline has changed since the clone was made.
+
+        Raises:
+            ValueError: If the clone was not made from this state, or this
+                Baseline has diverged since, and ``force`` is not set.
+        """
+        if not force:
+            if clone._parent_uid != self._uid:
+                raise ValueError(
+                    "cannot commit: the clone was not made from this state "
+                    "(unrelated lineage); pass force=True to commit anyway"
+                )
+            if clone._base_revision != self._revision:
+                raise ValueError(
+                    "cannot commit: this Baseline has diverged since the clone "
+                    "was made; pass force=True to commit anyway"
+                )
+        snapshot = copy.deepcopy(clone)
+        snapshot._discard_stale()
+        self.products = snapshot.products
+        self.meta = snapshot.meta
+        self.plots = snapshot.plots
+        self.order_mask = snapshot.order_mask
+        self.step = snapshot.step
+        self.provenance = snapshot.provenance
+        self.plot_steps = snapshot.plot_steps
+        self.stale = snapshot.stale
+        self._revision += 1
+
+    def _discard_stale(self) -> None:
+        """Drop every Stale product and QA artifact, rewinding progress."""
+        for key, step in list(self.provenance.items()):
+            if step not in self.stale:
+                continue
+            orders = self.stale[step]
+            value = self.products.get(key)
+            if (
+                orders is not None
+                and isinstance(value, Table)
+                and "order" in value.colnames
+            ):
+                kept = value[~np.isin(np.asarray(value["order"]), list(orders))]
+                if len(kept):
+                    self.products[key] = kept
+                    continue
+            self.products.pop(key, None)
+            del self.provenance[key]
+        for name, step in list(self.plot_steps.items()):
+            if step in self.stale:
+                self.plots.pop(name, None)
+                del self.plot_steps[name]
+        if self.stale:
+            first_stale = min(self.stale)
+            remaining = {*self.provenance.values(), *self.plot_steps.values()}
+            self.step = min(
+                self.step, max((s for s in remaining if s < first_stale), default=0)
+            )
+        self.stale = {}
+
+    def _record_run(
+        self, ordinal: int, result: StepResult, order: Optional[int], qa: bool
+    ) -> None:
+        """Record provenance for a step run and mark later steps Stale."""
+        recorded = {*self.provenance.values(), *self.plot_steps.values()}
+        later = {step for step in recorded if step > ordinal}
+        for step in later:
+            if order is None:
+                self.stale[step] = None
+            elif step not in self.stale or self.stale[step] is not None:
+                self.stale[step] = (self.stale.get(step) or set()) | {int(order)}
+        if ordinal in self.stale:
+            if order is None:
+                del self.stale[ordinal]
+            elif self.stale[ordinal] is not None:
+                self.stale[ordinal].discard(int(order))
+                if not self.stale[ordinal]:
+                    del self.stale[ordinal]
+        for key in result.products:
+            self.provenance[key] = ordinal
+        if qa:
+            for name in result.plots:
+                self.plot_steps[name] = ordinal
+
+    def compare(self, other: "ReductionState", step: str | int) -> "Figure":
+        """Compare this state with ``other`` for one reduction step.
+
+        By default this pairs each state's QA Artifacts for ``step`` into a dual
+        Plotly figure, this state on the left and ``other`` on the right. A step
+        may register its own builder with
+        :func:`~onfire.pipeline.steps.register_step_comparison`.
+
+        Raises:
+            ValueError: If either state has no QA Artifact for ``step``.
+        """
+        from plotly.subplots import make_subplots
+
+        name = step if isinstance(step, str) else step_name(step)
+        builder = get_step_comparison(name)
+        if builder is not None:
+            return builder(self, other)
+
+        ordinal = step_ordinal(name)
+        sides = (("this state", self), ("the other state", other))
+        columns = []
+        for label, state in sides:
+            figures = [
+                state.plots[plot]
+                for plot, plot_step in state.plot_steps.items()
+                if plot_step == ordinal and plot in state.plots
+            ]
+            if not figures:
+                raise ValueError(
+                    f"{label} has no QA Artifact for step {name!r}; run the step "
+                    "with qa=True (a single-order run only produces that "
+                    "order's artifact)"
+                )
+            columns.append(figures)
+
+        figure = make_subplots(
+            rows=1, cols=2, subplot_titles=[f"{label}: {name}" for label, _ in sides]
+        )
+        for column, figures in enumerate(columns, start=1):
+            for qa_figure in figures:
+                for trace in qa_figure.data:
+                    figure.add_trace(trace, row=1, col=column)
+        figure.update_layout(title=f"Comparison: {name}")
+        return figure
 
     def add_plot(self, name: str, figure: "Figure") -> None:
         """Attach an interactive Plotly ``figure`` to :attr:`plots`."""
         self.plots[name] = figure
 
-    def compare_telluric(self, commit: Optional[str] = None) -> "Figure":
+    def compare_telluric(
+        self, select: Optional[str] = None, *, commit: Optional[str] = None
+    ) -> "Figure":
         """Compare the empirical and grid telluric corrections interactively.
 
         Renders a dual Plotly figure showing, for the first reduced object, the
         transmission and the corrected spectrum of each available correction.
-        When ``commit`` names a method (``"empirical"`` or ``"grid"``), that
+        When ``select`` names a method (``"empirical"`` or ``"grid"``), that
         candidate's transmission, flux, variance, inverse variance, and mask are
         promoted to the canonical ``telluric_*`` products and the ``telluric``
         table's method column is updated.
 
         Args:
-            commit: Method to commit to the state, or ``None`` to only render.
+            select: Method to select into the state, or ``None`` to only render.
+            commit: Deprecated alias of ``select``; "commit" now means promoting a
+                State Clone to the Baseline (see :meth:`commit`).
 
         Returns:
             The comparison :class:`~plotly.graph_objects.Figure`, also attached
             to :attr:`plots` under ``"telluric_comparison"``.
 
         Raises:
-            ValueError: If no telluric candidates exist, or ``commit`` names an
+            ValueError: If no telluric candidates exist, or ``select`` names an
                 unavailable method.
         """
+        import warnings
+
         from plotly import graph_objects as go
         from plotly.subplots import make_subplots
+
+        if commit is not None:
+            warnings.warn(
+                "compare_telluric(commit=...) is deprecated; use select=...",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            select = commit if select is None else select
 
         candidates = [
             method
@@ -176,20 +359,20 @@ class ReductionState:
                 "compare_telluric requires telluric candidate products; "
                 "run telluric_correct first"
             )
-        if commit is not None:
-            commit = str(commit).lower()
-            if commit not in candidates:
+        if select is not None:
+            select = str(select).lower()
+            if select not in candidates:
                 raise ValueError(
-                    f"cannot commit {commit!r}; available methods: {candidates}"
+                    f"cannot select {select!r}; available methods: {candidates}"
                 )
             for suffix in ("transmission", "flux", "var", "ivar", "mask"):
                 self.products[f"telluric_{suffix}"] = self.products[
-                    f"telluric_{commit}_{suffix}"
+                    f"telluric_{select}_{suffix}"
                 ]
             table = self.products.get("telluric")
             if table is not None:
-                table["method"] = commit
-            self.meta["telluric_method"] = commit
+                table["method"] = select
+            self.meta["telluric_method"] = select
 
         wave = self.products.get("telluric_wave")
         wave = None if wave is None else np.asarray(wave, dtype=float)
@@ -303,13 +486,23 @@ class ReductionState:
 
         target.products.update(result.products)
         target.meta.update(result.meta)
+        # The step's earlier QA Artifacts no longer describe its products.
+        for plot, plot_step in list(target.plot_steps.items()):
+            if plot_step == ordinal:
+                target.plots.pop(plot, None)
+                del target.plot_steps[plot]
         if qa:
             target.plots.update(result.plots)
+        if order is not None and int(order) not in result.masked_orders:
+            # A successful targeted re-run is evidence the old mask no longer applies.
+            target.order_mask.unmask(order)
         for masked_order, reason in result.masked_orders.items():
             target.order_mask.mask(masked_order, reason)
         # Keep the high-water mark: re-running an earlier step (e.g. a single
         # order) must not rewind the recorded progress.
         target.step = max(target.step, ordinal)
+        target._record_run(ordinal, result, order, qa)
+        target._revision += 1
         return target
 
     def save(self, directory: str | Path, filename: Optional[str] = None) -> Path:

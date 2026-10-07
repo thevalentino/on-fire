@@ -20,6 +20,18 @@ _Avoid_: Checkpoint, cache, dump
 An isolated duplicate of an intermediate state created during interactive analysis to test parameter variations without modifying the baseline.
 _Avoid_: Fork, branch, copy
 
+**Baseline**:
+The canonical Intermediate State that a State Clone was cloned from and that downstream steps and checkpoints build on.
+_Avoid_: Original, master state, main state
+
+**Commit**:
+Promoting a State Clone to become the Baseline by replacing it wholesale, discarding all products downstream of the committed step.
+_Avoid_: Overwrite, merge, promote, apply
+
+**Stale**:
+A mark on an intermediate state's products indicating that an earlier reduction step has been re-run since they were produced, so they no longer match the current calibrations. Stale products are kept until a Commit discards them.
+_Avoid_: Dirty, invalid, outdated
+
 **Step Engine**:
 A pure functional, array-driven algorithm that executes a specific scientific computation independently of state management.
 _Avoid_: Worker, backend, runner
