@@ -420,6 +420,7 @@ def test_state_compare_telluric_renders_and_selects(tmp_path):
 
     figure = state.compare_telluric()
     assert figure is not None
+    assert figure.layout.title.text == "Telluric correction comparison"
     assert "telluric_comparison" in state.plots
     # Rendering alone does not change the committed correction.
     np.testing.assert_allclose(state.products["telluric_flux"], empirical_flux, equal_nan=True)
@@ -429,6 +430,64 @@ def test_state_compare_telluric_renders_and_selects(tmp_path):
     assert state.meta["telluric_method"] == "grid"
     assert str(state.products["telluric"]["method"][0]) == "grid"
     np.testing.assert_allclose(state.products["telluric_flux"], grid_flux, equal_nan=True)
+
+
+def test_telluric_correct_unknown_method_lists_the_available_methods():
+    products, _, _, _ = _telluric_products()
+
+    with pytest.raises(ValueError) as excinfo:
+        telluric_correct(products, {}, {"method": "mie"})
+
+    message = str(excinfo.value)
+    assert "mie" in message
+    assert "available methods" in message
+    assert "empirical" in message
+    assert "grid" in message
+
+
+def test_telluric_method_selected_on_a_clone_compares_and_commits():
+    products, _, _, _ = _telluric_products()
+    baseline = ReductionState(FrameTable.from_frames([]), {})
+    baseline.products.update(products)
+    baseline.step = 9
+    baseline.run_step("telluric_correct")
+    assert baseline.meta["telluric_method"] == "empirical"
+
+    clone = baseline.run_step(
+        "telluric_correct", clone=True, params={"method": "grid"}
+    )
+
+    assert clone.meta["telluric_method"] == "grid"
+    np.testing.assert_allclose(
+        clone.products["telluric_flux"],
+        clone.products["telluric_grid_flux"],
+        equal_nan=True,
+    )
+    assert baseline.meta["telluric_method"] == "empirical"
+
+    figure = baseline.compare(clone, "telluric_correct")
+    assert figure.layout.title.text == "Telluric correction comparison"
+    # Both states contribute a transmission and a corrected trace per correction.
+    assert len(figure.data) == 8
+    assert {trace.name for trace in figure.data} == {
+        "this state empirical transmission",
+        "this state empirical corrected",
+        "this state grid transmission",
+        "this state grid corrected",
+        "the other state empirical transmission",
+        "the other state empirical corrected",
+        "the other state grid transmission",
+        "the other state grid corrected",
+    }
+
+    baseline.commit(clone)
+
+    assert baseline.meta["telluric_method"] == "grid"
+    np.testing.assert_allclose(
+        baseline.products["telluric_flux"],
+        baseline.products["telluric_grid_flux"],
+        equal_nan=True,
+    )
 
 
 def test_state_flux_and_telluric_checkpoint_round_trip(tmp_path):

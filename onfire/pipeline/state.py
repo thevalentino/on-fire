@@ -21,6 +21,10 @@ from astropy.table import Table
 from onfire.core.fire import FIRE_ORDER_NUMBERS
 from onfire.setup.table import FrameTable
 
+from onfire.pipeline.comparisons import (
+    telluric_candidate_methods,
+    telluric_comparison,
+)
 from onfire.pipeline.config import load_config
 from onfire.pipeline.steps import (
     CROSS_ORDER_STEPS,
@@ -579,14 +583,18 @@ class ReductionState:
     def compare_telluric(
         self, select: Optional[str] = None, *, commit: Optional[str] = None
     ) -> "Figure":
-        """Compare the empirical and grid telluric corrections interactively.
+        """Render the Telluric correction comparison, optionally selecting a method.
 
-        Renders a dual Plotly figure showing, for the first reduced object, the
-        transmission and the corrected spectrum of each available correction.
-        When ``select`` names a method (``"empirical"`` or ``"grid"``), that
+        A thin entry point over the telluric step's registered comparison builder
+        (:func:`~onfire.pipeline.comparisons.telluric_comparison`), kept so existing
+        notebooks keep working. Rendering shows, for the first reduced object, the
+        transmission and corrected spectrum of each available correction. When
+        ``select`` names a method (``"empirical"`` or ``"grid"``), that
         candidate's transmission, flux, variance, inverse variance, and mask are
         copied to the canonical ``telluric_*`` products and the ``telluric``
-        table's method column is updated.
+        table's method column is updated. Choosing a method is also an ordinary
+        re-run of the ``telluric_correct`` step with a ``method`` parameter on a
+        State Clone, followed by :meth:`commit`.
 
         Args:
             select: Method to select into the state, or ``None`` to only render.
@@ -594,17 +602,14 @@ class ReductionState:
                 Baseline with a State Clone (see :meth:`commit`).
 
         Returns:
-            The comparison :class:`~plotly.graph_objects.Figure`, also attached
-            to :attr:`plots` under ``"telluric_comparison"``.
+            The purpose-built telluric comparison :class:`~plotly.graph_objects.Figure`,
+            also attached to :attr:`plots` under ``"telluric_comparison"``.
 
         Raises:
             ValueError: If no telluric candidates exist, or ``select`` names an
                 unavailable method.
         """
         import warnings
-
-        from plotly import graph_objects as go
-        from plotly.subplots import make_subplots
 
         if commit is not None:
             warnings.warn(
@@ -613,77 +618,33 @@ class ReductionState:
                 stacklevel=2,
             )
             select = commit if select is None else select
+        if select is not None:
+            self._select_telluric_method(select)
+        figure = telluric_comparison(self, self)
+        self.add_plot("telluric_comparison", figure)
+        return figure
 
-        candidates = [
-            method
-            for method in ("empirical", "grid")
-            if self.products.get(f"telluric_{method}_transmission") is not None
-        ]
+    def _select_telluric_method(self, select: str) -> None:
+        """Copy a chosen telluric candidate into the canonical ``telluric_*`` products."""
+        candidates = telluric_candidate_methods(self)
         if not candidates:
             raise ValueError(
                 "compare_telluric requires telluric candidate products; "
                 "run telluric_correct first"
             )
-        if select is not None:
-            select = str(select).lower()
-            if select not in candidates:
-                raise ValueError(
-                    f"cannot select {select!r}; available methods: {candidates}"
-                )
-            for suffix in ("transmission", "flux", "var", "ivar", "mask"):
-                self.products[f"telluric_{suffix}"] = self.products[
-                    f"telluric_{select}_{suffix}"
-                ]
-            table = self.products.get("telluric")
-            if table is not None:
-                table["method"] = select
-            self.meta["telluric_method"] = select
-
-        wave = self.products.get("telluric_wave")
-        wave = None if wave is None else np.asarray(wave, dtype=float)
-        figure = make_subplots(
-            rows=2,
-            cols=len(candidates),
-            subplot_titles=[f"{method} transmission" for method in candidates]
-            + [f"{method} corrected" for method in candidates],
-            specs=[[{}] * len(candidates), [{}] * len(candidates)],
-        )
-        for column, method in enumerate(candidates, start=1):
-            transmission = np.asarray(
-                self.products[f"telluric_{method}_transmission"], dtype=float
+        select = str(select).lower()
+        if select not in candidates:
+            raise ValueError(
+                f"cannot select {select!r}; available methods: {candidates}"
             )
-            corrected = np.asarray(
-                self.products[f"telluric_{method}_flux"], dtype=float
-            )
-            x = wave[:, 0] if wave is not None else np.arange(transmission.shape[0])
-            figure.add_trace(
-                go.Scatter(
-                    x=x,
-                    y=transmission[:, 0],
-                    mode="lines",
-                    name=f"{method} transmission",
-                ),
-                row=1,
-                col=column,
-            )
-            figure.add_trace(
-                go.Scatter(
-                    x=x,
-                    y=corrected[:, 0],
-                    mode="lines",
-                    name=f"{method} corrected",
-                ),
-                row=2,
-                col=column,
-            )
-        figure.update_layout(
-            title="Telluric correction comparison",
-            height=700,
-            showlegend=False,
-        )
-        figure.update_xaxes(title_text="wavelength (Angstrom)")
-        self.add_plot("telluric_comparison", figure)
-        return figure
+        for suffix in ("transmission", "flux", "var", "ivar", "mask"):
+            self.products[f"telluric_{suffix}"] = self.products[
+                f"telluric_{select}_{suffix}"
+            ]
+        table = self.products.get("telluric")
+        if table is not None:
+            table["method"] = select
+        self.meta["telluric_method"] = select
 
     def resolve_call_params(
         self,

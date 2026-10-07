@@ -85,7 +85,12 @@ from onfire.core.wavelengths import (
     reidentify_spectrum,
     regularize_wavelength_solution,
 )
-from onfire.pipeline.steps import StepResult, register_step_engine
+from onfire.pipeline.comparisons import telluric_comparison
+from onfire.pipeline.steps import (
+    StepResult,
+    register_step_comparison,
+    register_step_engine,
+)
 
 ORDER_TRACE_COLUMNS = (
     "order",
@@ -2813,9 +2818,13 @@ def telluric_correct(
             )
         active = requested
     else:
+        available = ["auto"]
+        if has_empirical:
+            available.append("empirical")
+        if has_grid:
+            available.append("grid")
         raise ValueError(
-            f"unknown telluric method {requested!r}; "
-            "expected 'auto', 'empirical' or 'grid'"
+            f"unknown telluric method {requested!r}; available methods: {available}"
         )
 
     empirical = (
@@ -3169,3 +3178,4 @@ def register_engines() -> None:
     register_step_engine("telluric_correct", telluric_correct)
     register_step_engine("coadd_orders", coadd_orders)
     register_step_engine("extinction_correct", extinction_correct)
+    register_step_comparison("telluric_correct", telluric_comparison)
