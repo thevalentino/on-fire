@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import copy
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Iterable, Optional
 
 import numpy as np
 from astropy.table import Table
@@ -67,6 +67,111 @@ class OrderMask:
 
 
 @dataclass
+class StaleMarks:
+    """Reduction steps whose products are out of date, scoped to affected orders.
+
+    A step that is absent is up to date. A present step is Stale either for every
+    order or for a specific set of orders. The "every order" encoding is private
+    to this type, so callers only ask whether a given order is Stale.
+    """
+
+    _marks: dict[int, Optional[set[int]]] = field(default_factory=dict)
+
+    def __contains__(self, step: int) -> bool:
+        return int(step) in self._marks
+
+    def steps(self) -> set[int]:
+        """Return the ordinals of every step currently marked Stale."""
+        return set(self._marks)
+
+    def is_stale_order(self, step: int, order: int) -> bool:
+        """Whether ``order``'s products of ``step`` are Stale."""
+        marked = self._marks.get(int(step))
+        if marked is None:
+            return int(step) in self._marks
+        return int(order) in marked
+
+    def mark_every_order(self, step: int) -> None:
+        """Mark every product of ``step`` Stale."""
+        self._marks[int(step)] = None
+
+    def mark_order(self, step: int, order: int) -> None:
+        """Mark ``order``'s products of ``step`` Stale; a whole-step mark stays."""
+        step, order = int(step), int(order)
+        if step not in self._marks:
+            self._marks[step] = {order}
+        elif self._marks[step] is not None:
+            self._marks[step].add(order)
+
+    def clear(self, step: int) -> None:
+        """Clear every Stale mark on ``step``."""
+        self._marks.pop(int(step), None)
+
+    def clear_order(self, step: int, order: int) -> None:
+        """Clear ``order``'s Stale mark on ``step``, leaving a whole-step mark."""
+        step, order = int(step), int(order)
+        marked = self._marks.get(step)
+        if marked is not None:
+            marked.discard(order)
+            if not marked:
+                del self._marks[step]
+
+    def to_json(self) -> dict[str, Any]:
+        """Serialise to the checkpoint JSON shape (``null`` means every order)."""
+        return {
+            str(step): None if orders is None else sorted(orders)
+            for step, orders in self._marks.items()
+        }
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> "StaleMarks":
+        """Rebuild from the checkpoint JSON shape written by :meth:`to_json`."""
+        return cls(
+            _marks={
+                int(step): None if orders is None else {int(o) for o in orders}
+                for step, orders in data.items()
+            }
+        )
+
+
+@dataclass
+class Provenance:
+    """Which reduction step produced each product and each QA Artifact."""
+
+    products: dict[str, int] = field(default_factory=dict)
+    plots: dict[str, int] = field(default_factory=dict)
+
+    def steps(self) -> set[int]:
+        """Return every step ordinal that has recorded a product or QA Artifact."""
+        return {*self.products.values(), *self.plots.values()}
+
+    def record_products(self, ordinal: int, keys: Iterable[str]) -> None:
+        """Record ``ordinal`` as the producer of each named product."""
+        for key in keys:
+            self.products[key] = ordinal
+
+    def record_plots(self, ordinal: int, names: Iterable[str]) -> None:
+        """Record ``ordinal`` as the producer of each named QA Artifact."""
+        for name in names:
+            self.plots[name] = ordinal
+
+
+@dataclass
+class Lineage:
+    """Session-local identity and revision counters for a state's clone graph.
+
+    A State Clone remembers its parent's identity and the parent revision it was
+    cloned at, so a Commit can refuse a clone whose Baseline has moved on. The
+    counters are never persisted, so each loaded state is its own lineage.
+    """
+
+    uid: str = field(default_factory=lambda: uuid.uuid4().hex)
+    parent_uid: Optional[str] = None
+    base_revision: int = 0
+    revision: int = 0
+
+
+@dataclass
 class ReductionState:
     """Central container for intermediate reduction data and step execution.
 
@@ -79,11 +184,11 @@ class ReductionState:
         order_mask: Flags marking unusable orders.
         plots: Live Plotly figures attached as QA artifacts, keyed by name.
         source: Provenance string, typically the Frame Table path.
-        provenance: The step ordinal that last produced each data product.
-        plot_steps: The step ordinal that produced each attached QA artifact.
+        provenance: Which step produced each product and each attached QA artifact.
         stale: Steps whose products are out of date because an earlier step was
-            re-run, mapped to the affected orders (``None`` means every order).
-            Stale products are kept until a Commit discards them.
+            re-run, scoped to the affected orders. Stale products are kept until
+            a Commit discards them.
+        lineage: Session-local identity and revision counters for State Clones.
     """
 
     frames: FrameTable
@@ -94,22 +199,9 @@ class ReductionState:
     order_mask: OrderMask = field(default_factory=OrderMask)
     plots: dict[str, "Figure"] = field(default_factory=dict)
     source: str = ""
-    provenance: dict[str, int] = field(default_factory=dict)
-    plot_steps: dict[str, int] = field(default_factory=dict)
-    stale: dict[int, Optional[set[int]]] = field(default_factory=dict)
-    # Session-local lineage: never persisted, so each loaded state is its own
-    # lineage and a clone can only be committed back to the state it came from.
-    _uid: str = field(
-        default_factory=lambda: uuid.uuid4().hex,
-        init=False,
-        repr=False,
-        compare=False,
-    )
-    _parent_uid: Optional[str] = field(
-        default=None, init=False, repr=False, compare=False
-    )
-    _base_revision: int = field(default=0, init=False, repr=False, compare=False)
-    _revision: int = field(default=0, init=False, repr=False, compare=False)
+    provenance: Provenance = field(default_factory=Provenance)
+    stale: StaleMarks = field(default_factory=StaleMarks)
+    lineage: Lineage = field(default_factory=Lineage, repr=False, compare=False)
 
     @classmethod
     def from_files(
@@ -158,14 +250,14 @@ class ReductionState:
     def clone(self) -> "ReductionState":
         """Return an independent State Clone for experimental parameter changes.
 
-        The clone is a deep copy, so mutating its data products, metadata, order
-        mask, or Plotly figures never touches this baseline state.
+        The clone holds its own data products, metadata, Order Mask, and Plotly
+        figures, so mutating them never touches this Baseline state.
         """
         clone = copy.deepcopy(self)
-        clone._uid = uuid.uuid4().hex
-        clone._parent_uid = self._uid
-        clone._base_revision = self._revision
-        clone._revision = 0
+        clone.lineage = Lineage(
+            parent_uid=self.lineage.uid,
+            base_revision=self.lineage.revision,
+        )
         return clone
 
     def commit(self, clone: "ReductionState", *, force: bool = False) -> None:
@@ -187,84 +279,80 @@ class ReductionState:
                 Baseline has diverged since, and ``force`` is not set.
         """
         if not force:
-            if clone._parent_uid != self._uid:
+            if clone.lineage.parent_uid != self.lineage.uid:
                 raise ValueError(
                     "cannot commit: the clone was not made from this state "
                     "(unrelated lineage); pass force=True to commit anyway"
                 )
-            if clone._base_revision != self._revision:
+            if clone.lineage.base_revision != self.lineage.revision:
                 raise ValueError(
                     "cannot commit: this Baseline has diverged since the clone "
                     "was made; pass force=True to commit anyway"
                 )
         snapshot = copy.deepcopy(clone)
         snapshot._discard_stale()
-        self.frames = snapshot.frames
-        self.config = snapshot.config
-        self.source = snapshot.source
-        self.products = snapshot.products
-        self.meta = snapshot.meta
-        self.plots = snapshot.plots
-        self.order_mask = snapshot.order_mask
-        self.step = snapshot.step
-        self.provenance = snapshot.provenance
-        self.plot_steps = snapshot.plot_steps
-        self.stale = snapshot.stale
-        self._revision += 1
+        self._adopt(snapshot)
+        self.lineage.revision += 1
+
+    def _adopt(self, other: "ReductionState") -> None:
+        """Replace this state's data with ``other``'s, keeping its own lineage."""
+        for data_field in fields(self):
+            if data_field.name != "lineage":
+                setattr(self, data_field.name, getattr(other, data_field.name))
+
+    def _drop_qa_artifacts(self, steps: set[int]) -> None:
+        """Drop every attached QA Artifact produced by a step in ``steps``."""
+        for name, step in list(self.provenance.plots.items()):
+            if step in steps:
+                self.plots.pop(name, None)
+                del self.provenance.plots[name]
 
     def _discard_stale(self) -> None:
         """Drop every Stale product and QA artifact, rewinding progress."""
-        for key, step in list(self.provenance.items()):
+        for key, step in list(self.provenance.products.items()):
             if step not in self.stale:
                 continue
-            orders = self.stale[step]
             value = self.products.get(key)
-            if (
-                orders is not None
-                and isinstance(value, Table)
-                and "order" in value.colnames
-            ):
-                kept = value[~np.isin(np.asarray(value["order"]), list(orders))]
+            if isinstance(value, Table) and "order" in value.colnames:
+                orders = np.asarray(value["order"])
+                keep = np.array(
+                    [not self.stale.is_stale_order(step, int(o)) for o in orders],
+                    dtype=bool,
+                )
+                kept = value[keep]
                 if len(kept):
                     self.products[key] = kept
                     continue
             self.products.pop(key, None)
-            del self.provenance[key]
-        for name, step in list(self.plot_steps.items()):
-            if step in self.stale:
-                self.plots.pop(name, None)
-                del self.plot_steps[name]
-        if self.stale:
-            first_stale = min(self.stale)
-            remaining = {*self.provenance.values(), *self.plot_steps.values()}
+            del self.provenance.products[key]
+        stale_steps = self.stale.steps()
+        self._drop_qa_artifacts(stale_steps)
+        if stale_steps:
+            first_stale = min(stale_steps)
+            remaining = self.provenance.steps()
             self.step = min(
                 self.step, max((s for s in remaining if s < first_stale), default=0)
             )
-        self.stale = {}
+        self.stale = StaleMarks()
 
     def _record_run(
         self, ordinal: int, result: StepResult, order: Optional[int], qa: bool
     ) -> None:
         """Record provenance for a step run and mark later steps Stale."""
-        recorded = {*self.provenance.values(), *self.plot_steps.values()}
-        later = {step for step in recorded if step > ordinal}
+        later = {step for step in self.provenance.steps() if step > ordinal}
         for step in later:
             if order is None or step_name(step) in CROSS_ORDER_STEPS:
-                self.stale[step] = None
-            elif step not in self.stale or self.stale[step] is not None:
-                self.stale[step] = (self.stale.get(step) or set()) | {int(order)}
+                self.stale.mark_every_order(step)
+            else:
+                self.stale.mark_order(step, int(order))
         if ordinal in self.stale:
             if order is None:
-                del self.stale[ordinal]
-            elif self.stale[ordinal] is not None:
-                self.stale[ordinal].discard(int(order))
-                if not self.stale[ordinal]:
-                    del self.stale[ordinal]
-        for key in result.products:
-            self.provenance[key] = ordinal
+                self.stale.clear(ordinal)
+            else:
+                self.stale.clear_order(ordinal, int(order))
+        self.provenance.record_products(ordinal, result.products)
         if qa:
-            for name in result.plots:
-                self.plot_steps[name] = ordinal
+            self.provenance.record_plots(ordinal, result.plots)
 
     def compare(self, other: "ReductionState", step: str | int) -> "Figure":
         """Compare this state with ``other`` for one reduction step.
@@ -290,7 +378,7 @@ class ReductionState:
         for label, state in sides:
             figures = [
                 state.plots[plot]
-                for plot, plot_step in state.plot_steps.items()
+                for plot, plot_step in state.provenance.plots.items()
                 if plot_step == ordinal and plot in state.plots
             ]
             if not figures:
@@ -493,10 +581,7 @@ class ReductionState:
         if order is None:
             # A full run supersedes the step's earlier QA Artifacts; a
             # single-order run only replaces the artifacts it re-creates.
-            for plot, plot_step in list(target.plot_steps.items()):
-                if plot_step == ordinal:
-                    target.plots.pop(plot, None)
-                    del target.plot_steps[plot]
+            target._drop_qa_artifacts({ordinal})
         if qa:
             target.plots.update(result.plots)
         if order is not None and int(order) not in result.masked_orders:
@@ -508,7 +593,7 @@ class ReductionState:
         # order) must not rewind the recorded progress.
         target.step = max(target.step, ordinal)
         target._record_run(ordinal, result, order, qa)
-        target._revision += 1
+        target.lineage.revision += 1
         return target
 
     def save(self, directory: str | Path, filename: Optional[str] = None) -> Path:

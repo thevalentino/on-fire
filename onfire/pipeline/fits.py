@@ -29,7 +29,7 @@ from astropy.table import Table as AstropyTable
 
 from onfire.setup.table import FrameTable
 
-from onfire.pipeline.state import OrderMask, ReductionState
+from onfire.pipeline.state import OrderMask, Provenance, ReductionState, StaleMarks
 
 _META_EXTNAME = "ONFIREMETA"
 
@@ -46,20 +46,6 @@ def _json_default(obj: Any) -> Any:
 
 def _dumps(obj: Any) -> str:
     return json.dumps(obj, default=_json_default, sort_keys=True)
-
-
-def _stale_to_json(stale: dict[int, Any]) -> dict[str, Any]:
-    return {
-        str(step): None if orders is None else sorted(orders)
-        for step, orders in stale.items()
-    }
-
-
-def _stale_from_json(data: dict[str, Any]) -> dict[int, Any]:
-    return {
-        int(step): None if orders is None else {int(o) for o in orders}
-        for step, orders in data.items()
-    }
 
 
 def _optional_json(row: Any, names: list[str], column: str) -> Any:
@@ -95,8 +81,8 @@ def _meta_hdu(state: ReductionState) -> fits.BinTableHDU:
         "config_json": [_dumps(state.config)],
         "meta_json": [_dumps(state.meta)],
         "order_mask_json": [_dumps(state.order_mask.to_dict())],
-        "provenance_json": [_dumps(state.provenance)],
-        "stale_json": [_dumps(_stale_to_json(state.stale))],
+        "provenance_json": [_dumps(state.provenance.products)],
+        "stale_json": [_dumps(state.stale.to_json())],
     }
     hdu = fits.BinTableHDU(AstropyTable(columns))
     hdu.name = _META_EXTNAME
@@ -153,9 +139,13 @@ def read_checkpoint(path: str | Path) -> ReductionState:
             step=int(row["step"]),
             order_mask=OrderMask.from_dict(json.loads(str(row["order_mask_json"]))),
             source=str(row["source"]),
-            provenance={
-                key: int(step)
-                for key, step in _optional_json(row, columns, "provenance_json").items()
-            },
-            stale=_stale_from_json(_optional_json(row, columns, "stale_json")),
+            provenance=Provenance(
+                products={
+                    key: int(step)
+                    for key, step in _optional_json(
+                        row, columns, "provenance_json"
+                    ).items()
+                }
+            ),
+            stale=StaleMarks.from_json(_optional_json(row, columns, "stale_json")),
         )
