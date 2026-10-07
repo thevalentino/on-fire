@@ -16,7 +16,6 @@ from astropy.io import fits
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from onfire.pipeline.state import ReductionState
 
-# Frame Table role -> state product key used by the Step Engines.
 ROLE_PRODUCTS: dict[str, str] = {
     "pixelflat": "raw_flats",
     "arc": "raw_arcs",

@@ -28,6 +28,7 @@ from onfire.core.tracing import (
     detect_order_edges,
     evaluate_edge_trace,
     fit_edge_traces,
+    trace_coordinate,
     trace_columns,
 )
 from onfire.pipeline.steps import StepResult, register_step_engine
@@ -111,12 +112,16 @@ def _blank_trace_table(ncoeff: int) -> Table:
     )
 
 
-def _existing_coefficients(table: Table) -> dict[int, tuple[np.ndarray, np.ndarray]]:
-    existing: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+def _existing_entries(
+    table: Table,
+) -> dict[int, tuple[np.ndarray, np.ndarray, float, float]]:
+    existing: dict[int, tuple[np.ndarray, np.ndarray, float, float]] = {}
     for row in table:
         existing[int(row["order"])] = (
             np.asarray(row["left_coeff"], dtype=float),
             np.asarray(row["right_coeff"], dtype=float),
+            float(row["rms_left"]),
+            float(row["rms_right"]),
         )
     return existing
 
@@ -145,8 +150,7 @@ def trace_orders(
     ncoeff = int(params.get("ncoeff", 5))
     maxshift = float(params.get("maxshift", 3.0))
     ref_row = (nspec - 1) // 2
-    xmid = (nspec - 1) / 2.0
-    xscale = xmid if xmid > 0 else 1.0
+    xmid, xscale = trace_coordinate(nspec)
 
     left0, right0, _ = detect_order_edges(flat, FIRE_ORDER_SPAT_POS)
     gradient = np.gradient(flat, axis=1)
@@ -161,24 +165,25 @@ def trace_orders(
         target_index = int(matches[0])
 
     coefficients: list[np.ndarray | None] = [None] * (2 * FIRE_NORDERS)
-    if target_index is not None and existing_table is not None:
-        for order, (left_coeff, right_coeff) in _existing_coefficients(
+    edge_rms: list[float] = [float("nan")] * (2 * FIRE_NORDERS)
+    reusing = target_index is not None and existing_table is not None
+    if reusing:
+        for order, (left_coeff, right_coeff, left_rms, right_rms) in _existing_entries(
             existing_table
         ).items():
             index = int(np.where(FIRE_ORDER_NUMBERS == order)[0][0])
             coefficients[2 * index] = left_coeff
             coefficients[2 * index + 1] = right_coeff
+            edge_rms[2 * index] = left_rms
+            edge_rms[2 * index + 1] = right_rms
 
-    indices = [target_index] if target_index is not None else list(range(FIRE_NORDERS))
+    indices = [target_index] if reusing else list(range(FIRE_NORDERS))
     starts: list[float] = []
     signs: list[float] = []
     slot_of_local: list[int] = []
-    local_of_slot: dict[int, int] = {}
     for index in indices:
         for side, seed in ((0, left0[index]), (1, right0[index])):
-            slot = 2 * index + side
-            slot_of_local.append(slot)
-            local_of_slot[slot] = len(slot_of_local) - 1
+            slot_of_local.append(2 * index + side)
             starts.append(float(seed))
             signs.append(1.0 if side == 0 else -1.0)
 
@@ -188,6 +193,7 @@ def trace_orders(
     fitted, rms = fit_edge_traces(tracked, ncoeff=ncoeff, ref_row=ref_row)
     for local, slot in enumerate(slot_of_local):
         coefficients[slot] = fitted[local]
+        edge_rms[slot] = rms[local]
 
     table = _blank_trace_table(ncoeff)
     edge_image = np.full((nspec, 2 * FIRE_NORDERS), np.nan, dtype=float)
@@ -213,8 +219,8 @@ def trace_orders(
         table["right_coeff"][index] = right_coeff
         table["left_cen"][index] = left_positions[ref_row]
         table["right_cen"][index] = right_positions[ref_row]
-        table["rms_left"][index] = _local_rms(rms, local_of_slot.get(2 * index))
-        table["rms_right"][index] = _local_rms(rms, local_of_slot.get(2 * index + 1))
+        table["rms_left"][index] = edge_rms[2 * index]
+        table["rms_right"][index] = edge_rms[2 * index + 1]
         table["masked"][index] = False
 
     figure = _edge_figure(flat, edge_image)
@@ -230,12 +236,6 @@ def trace_orders(
         plots={"edge_traces": figure},
         masked_orders=masked_orders,
     )
-
-
-def _local_rms(rms: list[float], local: int | None) -> float:
-    if local is None:
-        return float("nan")
-    return float(rms[local])
 
 
 def _edge_figure(flat: np.ndarray, edge_image: np.ndarray) -> go.Figure:

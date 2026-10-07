@@ -2,22 +2,20 @@
 
 These constants are extracted from PypeIt's Magellan/FIRE echelle spectrograph
 class: the 21 orders (11-31) and their expected fractional spatial positions on
-the detector. They are bundled here so the pipeline can locate and trace orders
-without any external download (ADR 0001).
+the detector, with index ``i`` corresponding to ``FIRE_ORDER_NUMBERS[i]``. The
+positions are for data taken after the 2016 FIRE dewar repair. They are bundled
+here so the pipeline can locate and trace orders without any external download
+(ADR 0001).
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-# FIRE echelle orders, bluest (31) first as they appear down the detector.
 FIRE_ORDER_NUMBERS: np.ndarray = np.arange(31, 10, -1, dtype=int)
 
 FIRE_NORDERS: int = int(FIRE_ORDER_NUMBERS.size)
 
-# Expected spatial position of each order as a fraction of the detector width.
-# Index ``i`` corresponds to ``FIRE_ORDER_NUMBERS[i]``. Values are for data
-# taken after the 2016 FIRE dewar repair.
 FIRE_ORDER_SPAT_POS: np.ndarray = np.array(
     [
         0.078125,

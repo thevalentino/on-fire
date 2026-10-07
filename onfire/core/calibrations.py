@@ -10,8 +10,8 @@ from __future__ import annotations
 import numpy as np
 from astropy.stats import mad_std
 
-# Default sigma-clipping thresholds keyed to the number of combined exposures,
-# following the convention used by PypeIt's ``weighted_combine``.
+from onfire.core.numerics import boxcar_1d
+
 _DEFAULT_SIGREJ: dict[int, float] = {3: 1.1, 4: 1.3, 5: 1.6, 6: 1.9}
 
 
@@ -23,50 +23,37 @@ def _boxcar_rows(image: np.ndarray, size: int) -> np.ndarray:
     """Smooth each row of a 2D array with a boxcar of ``size`` pixels."""
     if size <= 1:
         return image.astype(float, copy=True)
-    kernel = np.ones(size, dtype=float) / size
-    out = np.empty_like(image, dtype=float)
-    for i in range(image.shape[0]):
-        out[i] = np.convolve(image[i], kernel, mode="same")
-    return out
+    return np.vstack([boxcar_1d(row, size) for row in image])
 
 
 def _boxcar_columns(image: np.ndarray, size: int) -> np.ndarray:
     """Smooth each column of a 2D array with a boxcar of ``size`` pixels."""
     if size <= 1:
         return image.astype(float, copy=True)
-    kernel = np.ones(size, dtype=float) / size
-    out = np.empty_like(image, dtype=float)
-    for j in range(image.shape[1]):
-        out[:, j] = np.convolve(image[:, j], kernel, mode="same")
-    return out
+    return np.column_stack([boxcar_1d(column, size) for column in image.T])
 
 
 def combine_flats(
     flats: np.ndarray,
     *,
-    weights: np.ndarray | None = None,
     sigma_clip: bool = True,
     sigrej: float | None = None,
-    maxiters: int = 5,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Combine a stack of raw flat-field exposures.
 
     Args:
         flats: Image stack with shape ``(nimages, nspec, nspat)``.
-        weights: Optional per-image, per-pixel weights broadcastable to
-            ``flats.shape``. Uniform weights are used when omitted.
         sigma_clip: Reject pixels deviating from the per-pixel median when at
             least three images are combined. Sigma clipping needs at least
             three images to estimate a robust scale.
         sigrej: Rejection threshold in robust sigma. Defaults to a value based
             on the number of images.
-        maxiters: Unused; retained for interface symmetry with PypeIt.
 
     Returns:
         ``(combined, variance, good, nused)`` where ``combined`` and
-        ``variance`` are the weighted mean image and its propagated Poisson
-        variance, ``good`` is the boolean good-pixel mask of the combination,
-        and ``nused`` counts the exposures contributing to each pixel.
+        ``variance`` are the mean image and its propagated Poisson variance,
+        ``good`` is the boolean good-pixel mask of the combination, and
+        ``nused`` counts the exposures contributing to each pixel.
     """
     stack = np.asarray(flats, dtype=float)
     if stack.ndim == 2:
@@ -79,12 +66,6 @@ def combine_flats(
     nimages = stack.shape[0]
     good = np.isfinite(stack)
 
-    if weights is None:
-        weights_arr = np.ones_like(stack)
-    else:
-        weights_arr = np.broadcast_to(np.asarray(weights, dtype=float), stack.shape).copy()
-        good &= weights_arr > 0
-
     if sigma_clip and nimages >= 3:
         if sigrej is None:
             sigrej = _default_sigrej(nimages)
@@ -95,14 +76,13 @@ def combine_flats(
             deviation = np.abs(stack - median) / np.where(dispersion > 0, dispersion, np.inf)
         good &= (deviation < sigrej) | (dispersion == 0)
 
-    effective = np.where(good, weights_arr, 0.0)
+    effective = good.astype(float)
     weight_sum = effective.sum(axis=0)
     safe_sum = np.where(weight_sum > 0, weight_sum, 1.0)
     values = np.where(good, stack, 0.0)
 
     combined = (values * effective).sum(axis=0) / safe_sum
-    input_variance = np.abs(stack)
-    variance = (input_variance * effective**2).sum(axis=0) / safe_sum**2
+    variance = (np.abs(stack) * effective**2).sum(axis=0) / safe_sum**2
 
     good_all = good.any(axis=0)
     nused = good.sum(axis=0)

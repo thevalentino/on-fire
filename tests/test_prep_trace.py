@@ -3,8 +3,8 @@
 These exercise the public seams for reduction steps 1 and 2: the pure
 ``onfire.core`` Step Engines with synthetic detector images, and the
 ``ReductionState`` API (``load_raw_frames``, ``run_step``, ``save``, ``load``,
-``save_plots``) that wires them into Multi-Extension FITS checkpoints and
-Plotly QA artifacts.
+``save_plots``) that persists intermediate states to Multi-Extension FITS and
+emits Plotly QA artifacts.
 """
 
 import numpy as np
@@ -141,7 +141,11 @@ def test_trace_orders_single_order_retrace_preserves_other_orders():
     full = trace_orders({"flat_norm": flat}, {}, {"ncoeff": 3})
     baseline = full.products["order_traces"]
     before = {
-        int(row["order"]): np.array(row["left_coeff"]) for row in baseline
+        int(row["order"]): (
+            np.array(row["left_coeff"]),
+            float(row["rms_left"]),
+        )
+        for row in baseline
     }
 
     retraced = trace_orders(
@@ -152,11 +156,21 @@ def test_trace_orders_single_order_retrace_preserves_other_orders():
     assert len(after) == FIRE_NORDERS
     target = after[after["order"] == 13][0]
     assert np.all(np.isfinite(target["left_coeff"]))
-    for order, coeff in before.items():
-        if order == 13:
-            continue
+    for order, (coeff, rms) in before.items():
         row = after[after["order"] == order][0]
         np.testing.assert_array_equal(np.array(row["left_coeff"]), coeff)
+        if order != 13:
+            np.testing.assert_allclose(float(row["rms_left"]), rms, rtol=1e-6)
+
+
+def test_trace_orders_single_order_without_baseline_traces_all_orders():
+    flat, _, _ = make_flat(slope=0.02)
+
+    result = trace_orders({"flat_norm": flat}, {}, {"ncoeff": 3, "order": 13})
+
+    table = result.products["order_traces"]
+    assert not table["masked"].any()
+    assert np.all(np.isfinite(np.asarray(table["left_coeff"], dtype=float)))
 
 
 def test_prep_calibrations_engine_combines_and_masks():

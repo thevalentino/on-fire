@@ -10,12 +10,13 @@ from __future__ import annotations
 
 import numpy as np
 
+from onfire.core.numerics import boxcar_1d
 
-def _boxcar(values: np.ndarray, size: int) -> np.ndarray:
-    if size <= 1:
-        return values.astype(float, copy=True)
-    kernel = np.ones(size, dtype=float) / size
-    return np.convolve(values.astype(float), kernel, mode="same")
+
+def trace_coordinate(nspec: int) -> tuple[float, float]:
+    """Return the dispersion-coordinate midpoint and scale for ``nspec`` rows."""
+    xmid = (nspec - 1) / 2.0
+    return xmid, (xmid if xmid > 0 else 1.0)
 
 
 def _search_half(index: int, centers: np.ndarray, nspat: int) -> float:
@@ -58,7 +59,7 @@ def detect_order_edges(
     _, nspat = flat.shape
 
     expected = np.asarray(order_spat_pos, dtype=float) * (nspat - 1)
-    profile = _boxcar(np.nanmedian(flat, axis=0), profile_window)
+    profile = boxcar_1d(np.nanmedian(flat, axis=0), profile_window)
     gradient = np.gradient(profile)
 
     centers = np.empty(expected.size, dtype=float)
@@ -159,8 +160,7 @@ def fit_edge_traces(
     nspec = cen.shape[0]
     if ref_row is None:
         ref_row = (nspec - 1) // 2
-    xmid = (nspec - 1) / 2.0
-    xscale = xmid if xmid > 0 else 1.0
+    xmid, xscale = trace_coordinate(nspec)
     rows = np.arange(nspec)
     x = _xcoordinate(rows, xmid, xscale)
 
