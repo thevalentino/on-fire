@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Interactive analysis - onfire</title>
+<link rel="stylesheet" href="static/katex/katex.min.css">
+<link rel="stylesheet" href="static/pygments.css">
+<link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+<nav class="sidebar">
+<a class="brand" href="index.html">onfire</a>
+<ul><li><a href="index.html">Overview</a></li><li><a href="quickstart.html">Quickstart</a></li><li><a href="frame-table.html">Frame Table</a></li><li><a href="parameter-config.html">Parameter Config</a></li><li><a href="interactive.html" aria-current="page">Interactive analysis</a></li></ul>
+<div class="group">Reduction steps</div><ul><li><span class="todo">prep_calibrations</span></li><li><a href="trace_orders.html">trace_orders</a></li><li><span class="todo">calibrate_wavelengths</span></li><li><span class="todo">fit_tilts</span></li><li><span class="todo">process_science</span></li><li><span class="todo">find_objects</span></li><li><span class="todo">subtract_sky</span></li><li><span class="todo">extract_1d</span></li><li><span class="todo">flux_calibrate</span></li><li><span class="todo">telluric_correct</span></li><li><span class="todo">coadd_orders</span></li><li><span class="todo">extinction_correct</span></li></ul>
+</nav>
+<main>
+<h1>Interactive analysis</h1>
+<p>The batch command is for getting a first reduction. When one order or one step
+looks wrong, work in Python. The loop is: <strong>clone, re-run, compare, commit</strong>.</p>
+<h2>Load a state</h2>
+<p>Every completed step leaves a checkpoint file. Load one back into a
+<code>ReductionState</code>, the container that holds the Intermediate State:</p>
+<div class="codehilite"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">onfire.pipeline.state</span><span class="w"> </span><span class="kn">import</span> <span class="n">ReductionState</span>
+
+<span class="n">baseline</span> <span class="o">=</span> <span class="n">ReductionState</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="s2">"checkpoints/02_trace_orders.fits"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">baseline</span><span class="o">.</span><span class="n">step</span><span class="p">,</span> <span class="n">baseline</span><span class="o">.</span><span class="n">step_name</span><span class="p">)</span>
+</code></pre></div>
+
+<p>Or add <code>--interactive</code> to <code>onfire reduce</code> to get an IPython session already bound
+to the final state.</p>
+<h2>Clone and re-run</h2>
+<p>A <strong>State Clone</strong> is an isolated copy. Change it freely; the <strong>Baseline</strong> is never
+touched.</p>
+<div class="codehilite"><pre><span></span><code><span class="n">clone</span> <span class="o">=</span> <span class="n">baseline</span><span class="o">.</span><span class="n">run_step</span><span class="p">(</span>
+    <span class="s2">"trace_orders"</span><span class="p">,</span>
+    <span class="n">params</span><span class="o">=</span><span class="p">{</span><span class="s2">"ncoeff"</span><span class="p">:</span> <span class="mi">7</span><span class="p">},</span>
+    <span class="n">clone</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+    <span class="n">order</span><span class="o">=</span><span class="mi">13</span><span class="p">,</span>
+<span class="p">)</span>
+</code></pre></div>
+
+<ul>
+<li><code>params</code> overrides the Parameter Config for this call only.</li>
+<li><code>order=13</code> re-runs just that order. All other orders keep their previous results.</li>
+<li><code>clone=True</code> runs on a new State Clone and returns it. Without it, <code>run_step</code>
+  changes the state you call it on.</li>
+</ul>
+<p>A successful single-order re-run clears that order's <strong>Order Mask</strong>, since the old
+failure no longer applies.</p>
+<div class="code-ref"><div class="code-label">onfire/pipeline/state.py:676</div><div class="highlight"><pre><span></span>    <span class="k">def</span><span class="w"> </span><span class="nf">run_step</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">step</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="nb">int</span><span class="p">,</span>
+        <span class="o">*</span><span class="p">,</span>
+        <span class="n">params</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">clone</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+        <span class="n">qa</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+        <span class="n">order</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="s2">"ReductionState"</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">"""Execute a reduction step, in place or on an isolated State Clone.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            step: Step name or 1-based ordinal in the canonical sequence.</span>
+<span class="sd">            params: Algorithmic parameter overrides merged over the config.</span>
+<span class="sd">            clone: When ``True``, run on and return an independent State Clone,</span>
+<span class="sd">                leaving this baseline state untouched.</span>
+<span class="sd">            qa: When ``True``, attach any returned Plotly figures to :attr:`plots`.</span>
+<span class="sd">            order: Target a single echelle order (interactive single-order runs).</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            The mutated baseline state, or the new State Clone when ``clone`` is</span>
+<span class="sd">            ``True``.</span>
+<span class="sd">        """</span>
+        <span class="n">name</span> <span class="o">=</span> <span class="n">step</span> <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">step</span><span class="p">,</span> <span class="nb">str</span><span class="p">)</span> <span class="k">else</span> <span class="n">step_name</span><span class="p">(</span><span class="n">step</span><span class="p">)</span>
+        <span class="n">ordinal</span> <span class="o">=</span> <span class="n">step_ordinal</span><span class="p">(</span><span class="n">name</span><span class="p">)</span>
+        <span class="n">engine</span> <span class="o">=</span> <span class="n">get_step_engine</span><span class="p">(</span><span class="n">name</span><span class="p">)</span>
+
+        <span class="n">call_params</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">resolve_call_params</span><span class="p">(</span><span class="n">step</span><span class="p">,</span> <span class="n">params</span><span class="o">=</span><span class="n">params</span><span class="p">,</span> <span class="n">order</span><span class="o">=</span><span class="n">order</span><span class="p">)</span>
+
+        <span class="n">target</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">clone</span><span class="p">()</span> <span class="k">if</span> <span class="n">clone</span> <span class="k">else</span> <span class="bp">self</span>
+        <span class="n">result</span> <span class="o">=</span> <span class="n">engine</span><span class="p">(</span><span class="n">target</span><span class="o">.</span><span class="n">products</span><span class="p">,</span> <span class="n">target</span><span class="o">.</span><span class="n">meta</span><span class="p">,</span> <span class="n">call_params</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="n">StepResult</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">"engine for </span><span class="si">{</span><span class="n">name</span><span class="si">!r}</span><span class="s2"> returned </span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="n">result</span><span class="p">)</span><span class="o">.</span><span class="vm">__name__</span><span class="si">}</span><span class="s2">, "</span>
+                <span class="s2">"expected StepResult"</span>
+            <span class="p">)</span>
+
+        <span class="n">target</span><span class="o">.</span><span class="n">products</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">products</span><span class="p">)</span>
+        <span class="n">target</span><span class="o">.</span><span class="n">meta</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">meta</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">order</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="c1"># A full run supersedes the step's earlier QA Artifacts; a</span>
+            <span class="c1"># single-order run only replaces the artifacts it re-creates.</span>
+            <span class="n">target</span><span class="o">.</span><span class="n">_drop_qa_artifacts</span><span class="p">({</span><span class="n">ordinal</span><span class="p">})</span>
+        <span class="k">if</span> <span class="n">qa</span><span class="p">:</span>
+            <span class="n">target</span><span class="o">.</span><span class="n">plots</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">plots</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">order</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="nb">int</span><span class="p">(</span><span class="n">order</span><span class="p">)</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">result</span><span class="o">.</span><span class="n">masked_orders</span><span class="p">:</span>
+            <span class="c1"># A successful targeted re-run is evidence the old mask no longer applies.</span>
+            <span class="n">target</span><span class="o">.</span><span class="n">order_mask</span><span class="o">.</span><span class="n">unmask</span><span class="p">(</span><span class="n">order</span><span class="p">)</span>
+        <span class="k">for</span> <span class="n">masked_order</span><span class="p">,</span> <span class="n">reason</span> <span class="ow">in</span> <span class="n">result</span><span class="o">.</span><span class="n">masked_orders</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+            <span class="n">target</span><span class="o">.</span><span class="n">order_mask</span><span class="o">.</span><span class="n">mask</span><span class="p">(</span><span class="n">masked_order</span><span class="p">,</span> <span class="n">reason</span><span class="p">)</span>
+        <span class="c1"># Keep the high-water mark: re-running an earlier step (e.g. a single</span>
+        <span class="c1"># order) must not rewind the recorded progress.</span>
+        <span class="n">target</span><span class="o">.</span><span class="n">step</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="n">target</span><span class="o">.</span><span class="n">step</span><span class="p">,</span> <span class="n">ordinal</span><span class="p">)</span>
+        <span class="n">target</span><span class="o">.</span><span class="n">_record_run</span><span class="p">(</span><span class="n">ordinal</span><span class="p">,</span> <span class="n">result</span><span class="p">,</span> <span class="n">order</span><span class="p">,</span> <span class="n">qa</span><span class="p">)</span>
+        <span class="n">target</span><span class="o">.</span><span class="n">lineage</span><span class="o">.</span><span class="n">revision</span> <span class="o">+=</span> <span class="mi">1</span>
+        <span class="k">return</span> <span class="n">target</span>
+</pre></div>
+</div>
+<h2>Compare</h2>
+<p><code>compare</code> builds one Plotly figure with this state on the left and the other on the
+right, from the QA Artifacts each recorded for that step:</p>
+<div class="codehilite"><pre><span></span><code><span class="n">fig</span> <span class="o">=</span> <span class="n">baseline</span><span class="o">.</span><span class="n">compare</span><span class="p">(</span><span class="n">clone</span><span class="p">,</span> <span class="s2">"trace_orders"</span><span class="p">)</span>
+<span class="n">fig</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+</code></pre></div>
+
+<p>If either side has no QA Artifact for that step it raises <code>ValueError</code>, saying
+which orders are covered. A step can register its own comparison figure instead of
+the default pairing. <code>telluric_correct</code> does, to show the Empirical and Grid
+Telluric Correction side by side.</p>
+<h2>Stale products</h2>
+<p>Re-running an early step makes later products out of date: they were made with the
+old calibration. onfire does not delete them. It marks them <strong>Stale</strong> (per order,
+when you targeted one) so you can still look at them. They are discarded at Commit.</p>
+<h2>Commit</h2>
+<p>If the clone is better, adopt it:</p>
+<div class="codehilite"><pre><span></span><code><span class="n">baseline</span><span class="o">.</span><span class="n">commit</span><span class="p">(</span><span class="n">clone</span><span class="p">)</span>
+</code></pre></div>
+
+<p>Commit replaces the Baseline <strong>wholesale and in place</strong>. Your existing variables
+stay valid, the clone is left unchanged, and any product still marked Stale is
+dropped. Recorded progress rewinds to the last step with no Stale products, so you
+re-run forward from there.</p>
+<p>Nothing is written to disk by Commit. Save when you are ready:</p>
+<div class="codehilite"><pre><span></span><code><span class="n">baseline</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="s2">"checkpoints"</span><span class="p">)</span>
+</code></pre></div>
+
+<h3>When Commit refuses</h3>
+<p>A clone made from a different state, or from a Baseline that has changed since the
+clone was made, is refused with <code>ValueError</code>. Pass <code>force=True</code> to commit anyway.</p>
+<div class="code-ref"><div class="code-label">onfire/pipeline/state.py:440</div><div class="highlight"><pre><span></span>    <span class="k">def</span><span class="w"> </span><span class="nf">commit</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">clone</span><span class="p">:</span> <span class="s2">"ReductionState"</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">force</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">"""Replace this Baseline wholesale with a State Clone.</span>
+
+<span class="sd">        The Baseline object is mutated in place and the ``clone`` is left</span>
+<span class="sd">        unchanged. Products still marked Stale on the clone are discarded and the</span>
+<span class="sd">        recorded progress is rewound to the last step with no Stale products.</span>
+<span class="sd">        Nothing is written to disk.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            clone: A State Clone made from this state with :meth:`clone` or</span>
+<span class="sd">                ``run_step(..., clone=True)``.</span>
+<span class="sd">            force: Commit even if the clone is from an unrelated state or this</span>
+<span class="sd">                Baseline has changed since the clone was made.</span>
+
+<span class="sd">        Raises:</span>
+<span class="sd">            ValueError: If the clone was not made from this state, or this</span>
+<span class="sd">                Baseline has diverged since, and ``force`` is not set.</span>
+<span class="sd">        """</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">force</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">clone</span><span class="o">.</span><span class="n">lineage</span><span class="o">.</span><span class="n">parent_uid</span> <span class="o">!=</span> <span class="bp">self</span><span class="o">.</span><span class="n">lineage</span><span class="o">.</span><span class="n">uid</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+                    <span class="s2">"cannot commit: the clone was not made from this state "</span>
+                    <span class="s2">"(unrelated lineage); pass force=True to commit anyway"</span>
+                <span class="p">)</span>
+            <span class="k">if</span> <span class="n">clone</span><span class="o">.</span><span class="n">lineage</span><span class="o">.</span><span class="n">base_revision</span> <span class="o">!=</span> <span class="bp">self</span><span class="o">.</span><span class="n">lineage</span><span class="o">.</span><span class="n">revision</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+                    <span class="s2">"cannot commit: this Baseline has diverged since the clone "</span>
+                    <span class="s2">"was made; pass force=True to commit anyway"</span>
+                <span class="p">)</span>
+        <span class="n">snapshot</span> <span class="o">=</span> <span class="n">copy</span><span class="o">.</span><span class="n">deepcopy</span><span class="p">(</span><span class="n">clone</span><span class="p">)</span>
+        <span class="n">snapshot</span><span class="o">.</span><span class="n">_discard_stale</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_adopt</span><span class="p">(</span><span class="n">snapshot</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">lineage</span><span class="o">.</span><span class="n">revision</span> <span class="o">+=</span> <span class="mi">1</span>
+</pre></div>
+</div>
+</main>
+<script defer src="static/katex/katex.min.js"></script>
+<script defer src="static/katex/auto-render.min.js"></script>
+<script defer src="static/guide.js"></script>
+</body>
+</html>

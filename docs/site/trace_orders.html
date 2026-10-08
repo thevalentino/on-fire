@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>trace_orders - onfire</title>
+<link rel="stylesheet" href="static/katex/katex.min.css">
+<link rel="stylesheet" href="static/pygments.css">
+<link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+<nav class="sidebar">
+<a class="brand" href="index.html">onfire</a>
+<ul><li><a href="index.html">Overview</a></li><li><a href="quickstart.html">Quickstart</a></li><li><a href="frame-table.html">Frame Table</a></li><li><a href="parameter-config.html">Parameter Config</a></li><li><a href="interactive.html">Interactive analysis</a></li></ul>
+<div class="group">Reduction steps</div><ul><li><span class="todo">prep_calibrations</span></li><li><a href="trace_orders.html" aria-current="page">trace_orders</a></li><li><span class="todo">calibrate_wavelengths</span></li><li><span class="todo">fit_tilts</span></li><li><span class="todo">process_science</span></li><li><span class="todo">find_objects</span></li><li><span class="todo">subtract_sky</span></li><li><span class="todo">extract_1d</span></li><li><span class="todo">flux_calibrate</span></li><li><span class="todo">telluric_correct</span></li><li><span class="todo">coadd_orders</span></li><li><span class="todo">extinction_correct</span></li></ul>
+</nav>
+<main>
+<h1>trace_orders</h1>
+<p class="purpose">Locate and follow the left and right spatial edges of each of the 21 echelle orders (11 to 31) on the flat, and fit each edge with a smooth curve.</p>
+<section><h2>Inputs and outputs</h2><p><strong>Reads</strong></p>
+<ul>
+<li><code>flat_norm</code> (or <code>flat</code> if no normalised flat exists): the combined flat from <code>prep_calibrations</code>, shape <code>(nspec, nspat)</code>.</li>
+<li>Frame Table role loaded for this step: <code>pixelflat</code>.</li>
+</ul>
+<p><strong>Writes</strong></p>
+<p>| Product | Contents |
+|---------|----------|
+| <code>order_traces</code> | Table with one row per order: <code>order</code>, <code>left_cen</code>, <code>right_cen</code>, <code>left_coeff</code>, <code>right_coeff</code>, <code>xmid</code>, <code>xscale</code>, <code>rms_left</code>, <code>rms_right</code>, <code>masked</code>. |
+| <code>edge_traces</code> | Image of shape <code>(nspec, 2 * 21)</code> with each edge's fitted spatial position per row. |</p>
+<p><strong>QA Artifact:</strong> <code>edge_traces</code>, the edges overlaid on the flat.</p>
+<p>An order whose edge fit fails is flagged in the Order Mask with the reason
+<code>edge trace fit failed</code>; the other orders are unaffected.</p></section>
+<section><h2>How to call it</h2><p><strong>Command line</strong></p>
+<div class="codehilite"><pre><span></span><code>onfire<span class="w"> </span>reduce<span class="w"> </span>config.yaml<span class="w"> </span>--until<span class="w"> </span>trace_orders
+</code></pre></div>
+
+<p><strong>Parameter Config</strong></p>
+<div class="codehilite"><pre><span></span><code><span class="nt">steps</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">trace_orders</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">ncoeff</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5</span><span class="w">       </span><span class="c1"># number of polynomial coefficients per edge (default 5)</span>
+<span class="w">    </span><span class="nt">maxshift</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3.0</span><span class="w">   </span><span class="c1"># largest row-to-row edge movement, in pixels (default 3.0)</span>
+</code></pre></div>
+
+<p><strong>Python</strong>, one order only, on a State Clone:</p>
+<div class="codehilite"><pre><span></span><code><span class="n">clone</span> <span class="o">=</span> <span class="n">baseline</span><span class="o">.</span><span class="n">run_step</span><span class="p">(</span><span class="s2">"trace_orders"</span><span class="p">,</span> <span class="n">params</span><span class="o">=</span><span class="p">{</span><span class="s2">"ncoeff"</span><span class="p">:</span> <span class="mi">6</span><span class="p">},</span> <span class="n">clone</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">order</span><span class="o">=</span><span class="mi">13</span><span class="p">)</span>
+<span class="n">fig</span> <span class="o">=</span> <span class="n">baseline</span><span class="o">.</span><span class="n">compare</span><span class="p">(</span><span class="n">clone</span><span class="p">,</span> <span class="s2">"trace_orders"</span><span class="p">)</span>
+</code></pre></div>
+
+<p>With <code>order=</code> set and an existing <code>order_traces</code> product, only that order is
+re-traced and every other order keeps its previous fit. An order outside 11 to 31
+raises <code>ValueError</code>.</p></section>
+<section><h2>Figures</h2><figure class="pending"><div>figure pending: <code>trace_orders/edge-fit</code></div><figcaption>Fitted order edges overlaid on the normalised flat</figcaption></figure>
+
+<figure class="pending"><div>figure pending: <code>trace_orders/edge-fit-zoom</code></div><figcaption>Zoom on one order showing left and right edge fits</figcaption></figure></section>
+<details><summary>Numerical methods and idea</summary><p>The goal is two smooth curves per order, one for the left edge and one for the
+right, that later steps use to know where each order sits on the detector.</p>
+<p><strong>1. Find edges at the reference row.</strong> The flat is collapsed along dispersion
+(median over rows) and smoothed with a boxcar. The peak of this spatial profile
+near each expected order position is taken as the order centre. The left edge is
+the strongest <em>rising</em> spatial gradient between the previous order and the centre.
+The right edge is the strongest <em>falling</em> gradient between the centre and the next
+order.</p>
+<p><strong>2. Follow each edge along dispersion.</strong> Starting from the reference row (the
+middle of the detector) and working outward in both directions, each edge position
+is recentred row by row. The new position is the centroid of the positive part of
+the spatial gradient within <code>maxshift</code> pixels of the position in the adjacent row.
+For the left edge the gradient is used as is, and for the right edge its sign is
+flipped, so both edges look like a rising edge to the centroid.</p>
+<p><strong>3. Fit a smooth curve.</strong> With the row coordinate rescaled to $x \in [-1, 1]$,</p>
+<p>$$
+x = \frac{\text{row} - x_\mathrm{mid}}{x_\mathrm{scale}}, \qquad
+x_\mathrm{mid} = \frac{n_\mathrm{spec} - 1}{2},
+$$</p>
+<p>each tracked edge $y(x)$ is fit with a Legendre series of <code>ncoeff</code> terms,</p>
+<p>$$
+y(x) \approx \sum_{k=0}^{\mathrm{ncoeff}-1} c_k\, P_k(x),
+$$</p>
+<p>by ordinary least squares over the rows where the trace is finite. The reported
+<code>rms_left</code> and <code>rms_right</code> are the root-mean-square residuals of the fit. An edge
+with fewer finite rows than coefficients is not fit and masks its order.</p>
+<p><strong>To verify:</strong> the expected order positions are the fixed fractional positions
+stored for FIRE (<code>FIRE_ORDER_SPAT_POS</code>); this page has not checked how those values
+were derived.</p></details>
+<details><summary>Where this happens in the code</summary><p>The Step Engine in the pipeline layer gathers parameters, handles the single-order
+case, and builds the output table:</p>
+<div class="code-ref"><div class="code-label">onfire/core/engines.py:233</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">trace_orders</span><span class="p">(</span>
+    <span class="n">products</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+    <span class="n">meta</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+    <span class="n">params</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">StepResult</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Trace the left and right spatial edges of orders 11-31 (reduction step 2).</span>
+
+<span class="sd">    When ``params['order']`` targets a single order and an existing</span>
+<span class="sd">    ``order_traces`` product is present, only that order is re-traced; all other</span>
+<span class="sd">    orders keep their previous fits.</span>
+<span class="sd">    """</span>
+    <span class="n">flat</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"flat_norm"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">flat</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">flat</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"flat"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">flat</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="s2">"trace_orders requires a 'flat_norm' or 'flat' product; "</span>
+            <span class="s2">"run prep_calibrations first"</span>
+        <span class="p">)</span>
+    <span class="n">flat</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">flat</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">nspec</span> <span class="o">=</span> <span class="n">flat</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+    <span class="n">ncoeff</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"ncoeff"</span><span class="p">,</span> <span class="mi">5</span><span class="p">))</span>
+    <span class="n">maxshift</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"maxshift"</span><span class="p">,</span> <span class="mf">3.0</span><span class="p">))</span>
+    <span class="n">ref_row</span> <span class="o">=</span> <span class="p">(</span><span class="n">nspec</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span> <span class="o">//</span> <span class="mi">2</span>
+    <span class="n">xmid</span><span class="p">,</span> <span class="n">xscale</span> <span class="o">=</span> <span class="n">trace_coordinate</span><span class="p">(</span><span class="n">nspec</span><span class="p">)</span>
+
+    <span class="n">left0</span><span class="p">,</span> <span class="n">right0</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">detect_order_edges</span><span class="p">(</span><span class="n">flat</span><span class="p">,</span> <span class="n">FIRE_ORDER_SPAT_POS</span><span class="p">)</span>
+    <span class="n">gradient</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">gradient</span><span class="p">(</span><span class="n">flat</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
+
+    <span class="n">existing_table</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"order_traces"</span><span class="p">)</span>
+    <span class="n">target</span> <span class="o">=</span> <span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"order"</span><span class="p">)</span>
+    <span class="n">target_index</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="k">if</span> <span class="n">target</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">matches</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">FIRE_ORDER_NUMBERS</span> <span class="o">==</span> <span class="nb">int</span><span class="p">(</span><span class="n">target</span><span class="p">))[</span><span class="mi">0</span><span class="p">]</span>
+        <span class="k">if</span> <span class="n">matches</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"order </span><span class="si">{</span><span class="n">target</span><span class="si">}</span><span class="s2"> is not a FIRE echelle order 11-31"</span><span class="p">)</span>
+        <span class="n">target_index</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">matches</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
+
+    <span class="n">coefficients</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span> <span class="o">|</span> <span class="kc">None</span><span class="p">]</span> <span class="o">=</span> <span class="p">[</span><span class="kc">None</span><span class="p">]</span> <span class="o">*</span> <span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">FIRE_NORDERS</span><span class="p">)</span>
+    <span class="n">edge_rms</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="p">[</span><span class="nb">float</span><span class="p">(</span><span class="s2">"nan"</span><span class="p">)]</span> <span class="o">*</span> <span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">FIRE_NORDERS</span><span class="p">)</span>
+    <span class="n">reusing</span> <span class="o">=</span> <span class="n">target_index</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">existing_table</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+    <span class="k">if</span> <span class="n">reusing</span><span class="p">:</span>
+        <span class="k">for</span> <span class="n">order</span><span class="p">,</span> <span class="p">(</span><span class="n">left_coeff</span><span class="p">,</span> <span class="n">right_coeff</span><span class="p">,</span> <span class="n">left_rms</span><span class="p">,</span> <span class="n">right_rms</span><span class="p">)</span> <span class="ow">in</span> <span class="n">_existing_entries</span><span class="p">(</span>
+            <span class="n">existing_table</span>
+        <span class="p">)</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+            <span class="n">index</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">FIRE_ORDER_NUMBERS</span> <span class="o">==</span> <span class="n">order</span><span class="p">)[</span><span class="mi">0</span><span class="p">][</span><span class="mi">0</span><span class="p">])</span>
+            <span class="n">coefficients</span><span class="p">[</span><span class="mi">2</span> <span class="o">*</span> <span class="n">index</span><span class="p">]</span> <span class="o">=</span> <span class="n">left_coeff</span>
+            <span class="n">coefficients</span><span class="p">[</span><span class="mi">2</span> <span class="o">*</span> <span class="n">index</span> <span class="o">+</span> <span class="mi">1</span><span class="p">]</span> <span class="o">=</span> <span class="n">right_coeff</span>
+            <span class="n">edge_rms</span><span class="p">[</span><span class="mi">2</span> <span class="o">*</span> <span class="n">index</span><span class="p">]</span> <span class="o">=</span> <span class="n">left_rms</span>
+            <span class="n">edge_rms</span><span class="p">[</span><span class="mi">2</span> <span class="o">*</span> <span class="n">index</span> <span class="o">+</span> <span class="mi">1</span><span class="p">]</span> <span class="o">=</span> <span class="n">right_rms</span>
+
+    <span class="n">indices</span> <span class="o">=</span> <span class="p">[</span><span class="n">target_index</span><span class="p">]</span> <span class="k">if</span> <span class="n">reusing</span> <span class="k">else</span> <span class="nb">list</span><span class="p">(</span><span class="nb">range</span><span class="p">(</span><span class="n">FIRE_NORDERS</span><span class="p">))</span>
+    <span class="n">starts</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="n">signs</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="n">slot_of_local</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="k">for</span> <span class="n">index</span> <span class="ow">in</span> <span class="n">indices</span><span class="p">:</span>
+        <span class="k">for</span> <span class="n">side</span><span class="p">,</span> <span class="n">seed</span> <span class="ow">in</span> <span class="p">((</span><span class="mi">0</span><span class="p">,</span> <span class="n">left0</span><span class="p">[</span><span class="n">index</span><span class="p">]),</span> <span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">right0</span><span class="p">[</span><span class="n">index</span><span class="p">])):</span>
+            <span class="n">slot_of_local</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">index</span> <span class="o">+</span> <span class="n">side</span><span class="p">)</span>
+            <span class="n">starts</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="nb">float</span><span class="p">(</span><span class="n">seed</span><span class="p">))</span>
+            <span class="n">signs</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="mf">1.0</span> <span class="k">if</span> <span class="n">side</span> <span class="o">==</span> <span class="mi">0</span> <span class="k">else</span> <span class="o">-</span><span class="mf">1.0</span><span class="p">)</span>
+
+    <span class="n">tracked</span> <span class="o">=</span> <span class="n">trace_columns</span><span class="p">(</span>
+        <span class="n">gradient</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">starts</span><span class="p">),</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">signs</span><span class="p">),</span> <span class="n">maxshift</span><span class="o">=</span><span class="n">maxshift</span><span class="p">,</span> <span class="n">ref_row</span><span class="o">=</span><span class="n">ref_row</span>
+    <span class="p">)</span>
+    <span class="n">fitted</span><span class="p">,</span> <span class="n">rms</span> <span class="o">=</span> <span class="n">fit_edge_traces</span><span class="p">(</span><span class="n">tracked</span><span class="p">,</span> <span class="n">ncoeff</span><span class="o">=</span><span class="n">ncoeff</span><span class="p">,</span> <span class="n">ref_row</span><span class="o">=</span><span class="n">ref_row</span><span class="p">)</span>
+    <span class="k">for</span> <span class="n">local</span><span class="p">,</span> <span class="n">slot</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">slot_of_local</span><span class="p">):</span>
+        <span class="n">coefficients</span><span class="p">[</span><span class="n">slot</span><span class="p">]</span> <span class="o">=</span> <span class="n">fitted</span><span class="p">[</span><span class="n">local</span><span class="p">]</span>
+        <span class="n">edge_rms</span><span class="p">[</span><span class="n">slot</span><span class="p">]</span> <span class="o">=</span> <span class="n">rms</span><span class="p">[</span><span class="n">local</span><span class="p">]</span>
+
+    <span class="n">table</span> <span class="o">=</span> <span class="n">_blank_trace_table</span><span class="p">(</span><span class="n">ncoeff</span><span class="p">)</span>
+    <span class="n">edge_image</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">full</span><span class="p">((</span><span class="n">nspec</span><span class="p">,</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">FIRE_NORDERS</span><span class="p">),</span> <span class="n">np</span><span class="o">.</span><span class="n">nan</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">rows</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="n">nspec</span><span class="p">)</span>
+    <span class="n">masked_orders</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
+    <span class="k">for</span> <span class="n">index</span><span class="p">,</span> <span class="n">order</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">FIRE_ORDER_NUMBERS</span><span class="p">):</span>
+        <span class="n">left_coeff</span> <span class="o">=</span> <span class="n">coefficients</span><span class="p">[</span><span class="mi">2</span> <span class="o">*</span> <span class="n">index</span><span class="p">]</span>
+        <span class="n">right_coeff</span> <span class="o">=</span> <span class="n">coefficients</span><span class="p">[</span><span class="mi">2</span> <span class="o">*</span> <span class="n">index</span> <span class="o">+</span> <span class="mi">1</span><span class="p">]</span>
+        <span class="n">table</span><span class="p">[</span><span class="s2">"order"</span><span class="p">][</span><span class="n">index</span><span class="p">]</span> <span class="o">=</span> <span class="n">order</span>
+        <span class="n">table</span><span class="p">[</span><span class="s2">"xmid"</span><span class="p">][</span><span class="n">index</span><span class="p">]</span> <span class="o">=</span> <span class="n">xmid</span>
+        <span class="n">table</span><span class="p">[</span><span class="s2">"xscale"</span><span class="p">][</span><span class="n">index</span><span class="p">]</span> <span class="o">=</span> <span class="n">xscale</span>
+        <span class="k">if</span> <span class="n">left_coeff</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="n">right_coeff</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="ow">not</span> <span class="p">(</span>
+            <span class="n">np</span><span class="o">.</span><span class="n">all</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">left_coeff</span><span class="p">))</span> <span class="ow">and</span> <span class="n">np</span><span class="o">.</span><span class="n">all</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">right_coeff</span><span class="p">))</span>
+        <span class="p">):</span>
+            <span class="n">table</span><span class="p">[</span><span class="s2">"masked"</span><span class="p">][</span><span class="n">index</span><span class="p">]</span> <span class="o">=</span> <span class="kc">True</span>
+            <span class="n">masked_orders</span><span class="p">[</span><span class="nb">int</span><span class="p">(</span><span class="n">order</span><span class="p">)]</span> <span class="o">=</span> <span class="s2">"edge trace fit failed"</span>
+            <span class="k">continue</span>
+        <span class="n">left_positions</span> <span class="o">=</span> <span class="n">evaluate_edge_trace</span><span class="p">(</span><span class="n">left_coeff</span><span class="p">,</span> <span class="n">xmid</span><span class="p">,</span> <span class="n">xscale</span><span class="p">,</span> <span class="n">rows</span><span class="p">)</span>
+        <span class="n">right_positions</span> <span class="o">=</span> <span class="n">evaluate_edge_trace</span><span class="p">(</span><span class="n">right_coeff</span><span class="p">,</span> <span class="n">xmid</span><span class="p">,</span> <span class="n">xscale</span><span class="p">,</span> <span class="n">rows</span><span class="p">)</span>
+        <span class="n">edge_image</span><span class="p">[:,</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">index</span><span class="p">]</span> <span class="o">=</span> <span class="n">left_positions</span>
+        <span class="n">edge_image</span><span class="p">[:,</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">index</span> <span class="o">+</span> <span class="mi">1</span><span class="p">]</span> <span class="o">=</span> <span class="n">right_positions</span>
+        <span class="n">table</span><span class="p">[</span><span class="s2">"left_coeff"</span><span class="p">][</span><span class="n">index</span><span class="p">]</span> <span class="o">=</span> <span class="n">left_coeff</span>
+        <span class="n">table</span><span class="p">[</span><span class="s2">"right_coeff"</span><span class="p">][</span><span class="n">index</span><span class="p">]</span> <span class="o">=</span> <span class="n">right_coeff</span>
+        <span class="n">table</span><span class="p">[</span><span class="s2">"left_cen"</span><span class="p">][</span><span class="n">index</span><span class="p">]</span> <span class="o">=</span> <span class="n">left_positions</span><span class="p">[</span><span class="n">ref_row</span><span class="p">]</span>
+        <span class="n">table</span><span class="p">[</span><span class="s2">"right_cen"</span><span class="p">][</span><span class="n">index</span><span class="p">]</span> <span class="o">=</span> <span class="n">right_positions</span><span class="p">[</span><span class="n">ref_row</span><span class="p">]</span>
+        <span class="n">table</span><span class="p">[</span><span class="s2">"rms_left"</span><span class="p">][</span><span class="n">index</span><span class="p">]</span> <span class="o">=</span> <span class="n">edge_rms</span><span class="p">[</span><span class="mi">2</span> <span class="o">*</span> <span class="n">index</span><span class="p">]</span>
+        <span class="n">table</span><span class="p">[</span><span class="s2">"rms_right"</span><span class="p">][</span><span class="n">index</span><span class="p">]</span> <span class="o">=</span> <span class="n">edge_rms</span><span class="p">[</span><span class="mi">2</span> <span class="o">*</span> <span class="n">index</span> <span class="o">+</span> <span class="mi">1</span><span class="p">]</span>
+        <span class="n">table</span><span class="p">[</span><span class="s2">"masked"</span><span class="p">][</span><span class="n">index</span><span class="p">]</span> <span class="o">=</span> <span class="kc">False</span>
+
+    <span class="n">figure</span> <span class="o">=</span> <span class="n">_edge_figure</span><span class="p">(</span><span class="n">flat</span><span class="p">,</span> <span class="n">edge_image</span><span class="p">)</span>
+    <span class="n">n_masked</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">table</span><span class="p">[</span><span class="s2">"masked"</span><span class="p">]</span><span class="o">.</span><span class="n">sum</span><span class="p">())</span>
+    <span class="k">return</span> <span class="n">StepResult</span><span class="p">(</span>
+        <span class="n">products</span><span class="o">=</span><span class="p">{</span><span class="s2">"order_traces"</span><span class="p">:</span> <span class="n">table</span><span class="p">,</span> <span class="s2">"edge_traces"</span><span class="p">:</span> <span class="n">edge_image</span><span class="p">},</span>
+        <span class="n">meta</span><span class="o">=</span><span class="p">{</span>
+            <span class="s2">"n_orders"</span><span class="p">:</span> <span class="n">FIRE_NORDERS</span><span class="p">,</span>
+            <span class="s2">"n_orders_traced"</span><span class="p">:</span> <span class="nb">int</span><span class="p">(</span><span class="n">FIRE_NORDERS</span> <span class="o">-</span> <span class="n">n_masked</span><span class="p">),</span>
+            <span class="s2">"n_orders_masked"</span><span class="p">:</span> <span class="n">n_masked</span><span class="p">,</span>
+            <span class="s2">"ncoeff"</span><span class="p">:</span> <span class="n">ncoeff</span><span class="p">,</span>
+        <span class="p">},</span>
+        <span class="n">plots</span><span class="o">=</span><span class="p">{</span><span class="s2">"edge_traces"</span><span class="p">:</span> <span class="n">figure</span><span class="p">},</span>
+        <span class="n">masked_orders</span><span class="o">=</span><span class="n">masked_orders</span><span class="p">,</span>
+    <span class="p">)</span>
+</pre></div>
+</div>
+<p>The pure array algorithms it calls live in <code>onfire/core/tracing.py</code>, independent of
+any state handling:</p>
+<div class="code-ref"><div class="code-label">onfire/core/tracing.py:33</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">detect_order_edges</span><span class="p">(</span>
+    <span class="n">flat</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">order_spat_pos</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">profile_window</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">7</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""Locate the left and right spatial edges of each echelle order.</span>
+
+<span class="sd">    The order centres are found as peaks of the dispersion-collapsed spatial</span>
+<span class="sd">    profile, refined from the expected fractional order positions. Each left</span>
+<span class="sd">    edge is then the strongest rising spatial gradient between the previous</span>
+<span class="sd">    order and the centre, and each right edge the strongest falling gradient</span>
+<span class="sd">    between the centre and the next order.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        flat: Combined flat with shape ``(nspec, nspat)``.</span>
+<span class="sd">        order_spat_pos: Expected fractional spatial position of each order.</span>
+<span class="sd">        profile_window: Boxcar size used to smooth the collapsed profile.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        ``(left, right, centers)`` arrays of pixel positions at the reference</span>
+<span class="sd">        row, all ordered to match ``order_spat_pos``.</span>
+<span class="sd">    """</span>
+    <span class="n">flat</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">flat</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">flat</span><span class="o">.</span><span class="n">ndim</span> <span class="o">!=</span> <span class="mi">2</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">"flat must be 2D"</span><span class="p">)</span>
+    <span class="n">_</span><span class="p">,</span> <span class="n">nspat</span> <span class="o">=</span> <span class="n">flat</span><span class="o">.</span><span class="n">shape</span>
+
+    <span class="n">expected</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">order_spat_pos</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span> <span class="o">*</span> <span class="p">(</span><span class="n">nspat</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span>
+    <span class="n">profile</span> <span class="o">=</span> <span class="n">boxcar_1d</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">nanmedian</span><span class="p">(</span><span class="n">flat</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">0</span><span class="p">),</span> <span class="n">profile_window</span><span class="p">)</span>
+    <span class="n">gradient</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">gradient</span><span class="p">(</span><span class="n">profile</span><span class="p">)</span>
+
+    <span class="n">centers</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">expected</span><span class="o">.</span><span class="n">size</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="n">center</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">expected</span><span class="p">):</span>
+        <span class="n">half</span> <span class="o">=</span> <span class="n">_search_half</span><span class="p">(</span><span class="n">i</span><span class="p">,</span> <span class="n">expected</span><span class="p">,</span> <span class="n">nspat</span><span class="p">)</span>
+        <span class="n">lo</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">floor</span><span class="p">(</span><span class="n">center</span> <span class="o">-</span> <span class="n">half</span><span class="p">)))</span>
+        <span class="n">hi</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="nb">min</span><span class="p">(</span><span class="n">nspat</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ceil</span><span class="p">(</span><span class="n">center</span> <span class="o">+</span> <span class="n">half</span><span class="p">)</span> <span class="o">+</span> <span class="mi">1</span><span class="p">))</span>
+        <span class="k">if</span> <span class="n">hi</span> <span class="o">&lt;=</span> <span class="n">lo</span><span class="p">:</span>
+            <span class="n">centers</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">=</span> <span class="n">center</span>
+            <span class="k">continue</span>
+        <span class="n">centers</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">=</span> <span class="n">lo</span> <span class="o">+</span> <span class="nb">float</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">argmax</span><span class="p">(</span><span class="n">profile</span><span class="p">[</span><span class="n">lo</span><span class="p">:</span><span class="n">hi</span><span class="p">]))</span>
+
+    <span class="n">left</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">expected</span><span class="o">.</span><span class="n">size</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">right</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">expected</span><span class="o">.</span><span class="n">size</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="n">center</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">centers</span><span class="p">):</span>
+        <span class="n">half</span> <span class="o">=</span> <span class="n">_search_half</span><span class="p">(</span><span class="n">i</span><span class="p">,</span> <span class="n">centers</span><span class="p">,</span> <span class="n">nspat</span><span class="p">)</span>
+        <span class="n">lo</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">floor</span><span class="p">(</span><span class="n">center</span> <span class="o">-</span> <span class="n">half</span><span class="p">)))</span>
+        <span class="n">hi</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="nb">min</span><span class="p">(</span><span class="n">nspat</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">floor</span><span class="p">(</span><span class="n">center</span><span class="p">)))</span>
+        <span class="n">left</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">=</span> <span class="n">lo</span> <span class="o">+</span> <span class="nb">float</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">argmax</span><span class="p">(</span><span class="n">gradient</span><span class="p">[</span><span class="n">lo</span><span class="p">:</span><span class="n">hi</span><span class="p">]))</span> <span class="k">if</span> <span class="n">hi</span> <span class="o">&gt;</span> <span class="n">lo</span> <span class="k">else</span> <span class="n">center</span>
+        <span class="n">lo</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">floor</span><span class="p">(</span><span class="n">center</span><span class="p">)))</span>
+        <span class="n">hi</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="nb">min</span><span class="p">(</span><span class="n">nspat</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ceil</span><span class="p">(</span><span class="n">center</span> <span class="o">+</span> <span class="n">half</span><span class="p">)</span> <span class="o">+</span> <span class="mi">1</span><span class="p">))</span>
+        <span class="n">right</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">=</span> <span class="n">lo</span> <span class="o">+</span> <span class="nb">float</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">argmin</span><span class="p">(</span><span class="n">gradient</span><span class="p">[</span><span class="n">lo</span><span class="p">:</span><span class="n">hi</span><span class="p">]))</span> <span class="k">if</span> <span class="n">hi</span> <span class="o">&gt;</span> <span class="n">lo</span> <span class="k">else</span> <span class="n">center</span>
+
+    <span class="k">return</span> <span class="n">left</span><span class="p">,</span> <span class="n">right</span><span class="p">,</span> <span class="n">centers</span>
+</pre></div>
+</div>
+<div class="code-ref"><div class="code-label">onfire/core/tracing.py:103</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">trace_columns</span><span class="p">(</span>
+    <span class="n">gradient</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">starts</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">signs</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">maxshift</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">3.0</span><span class="p">,</span>
+    <span class="n">ref_row</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Follow edge positions along the dispersion axis.</span>
+
+<span class="sd">    Each edge is recentred row by row within ``maxshift`` pixels of its</span>
+<span class="sd">    position in the adjacent row, starting from the reference row and working</span>
+<span class="sd">    outward. ``signs`` selects rising (+1, left edges) or falling (-1, right</span>
+<span class="sd">    edges) spatial gradients.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        An array of shape ``(nspec, len(starts))`` of tracked edge centroids.</span>
+<span class="sd">    """</span>
+    <span class="n">gradient</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">gradient</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">nspec</span> <span class="o">=</span> <span class="n">gradient</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+    <span class="k">if</span> <span class="n">ref_row</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">ref_row</span> <span class="o">=</span> <span class="n">nspec</span> <span class="o">//</span> <span class="mi">2</span>
+    <span class="n">cen</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">full</span><span class="p">((</span><span class="n">nspec</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">starts</span><span class="p">)),</span> <span class="n">np</span><span class="o">.</span><span class="n">nan</span><span class="p">)</span>
+    <span class="k">for</span> <span class="n">j</span><span class="p">,</span> <span class="p">(</span><span class="n">start</span><span class="p">,</span> <span class="n">sign</span><span class="p">)</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="nb">zip</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">atleast_1d</span><span class="p">(</span><span class="n">starts</span><span class="p">),</span> <span class="n">np</span><span class="o">.</span><span class="n">atleast_1d</span><span class="p">(</span><span class="n">signs</span><span class="p">))):</span>
+        <span class="n">previous</span> <span class="o">=</span> <span class="n">_recenter</span><span class="p">(</span><span class="n">sign</span> <span class="o">*</span> <span class="n">gradient</span><span class="p">[</span><span class="n">ref_row</span><span class="p">],</span> <span class="nb">float</span><span class="p">(</span><span class="n">start</span><span class="p">),</span> <span class="n">maxshift</span><span class="p">)</span>
+        <span class="n">cen</span><span class="p">[</span><span class="n">ref_row</span><span class="p">,</span> <span class="n">j</span><span class="p">]</span> <span class="o">=</span> <span class="n">previous</span>
+        <span class="k">for</span> <span class="n">row</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">ref_row</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">nspec</span><span class="p">):</span>
+            <span class="n">previous</span> <span class="o">=</span> <span class="n">_recenter</span><span class="p">(</span><span class="n">sign</span> <span class="o">*</span> <span class="n">gradient</span><span class="p">[</span><span class="n">row</span><span class="p">],</span> <span class="n">previous</span><span class="p">,</span> <span class="n">maxshift</span><span class="p">)</span>
+            <span class="n">cen</span><span class="p">[</span><span class="n">row</span><span class="p">,</span> <span class="n">j</span><span class="p">]</span> <span class="o">=</span> <span class="n">previous</span>
+        <span class="k">for</span> <span class="n">row</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">ref_row</span> <span class="o">-</span> <span class="mi">1</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">):</span>
+            <span class="n">previous</span> <span class="o">=</span> <span class="n">_recenter</span><span class="p">(</span><span class="n">sign</span> <span class="o">*</span> <span class="n">gradient</span><span class="p">[</span><span class="n">row</span><span class="p">],</span> <span class="n">previous</span><span class="p">,</span> <span class="n">maxshift</span><span class="p">)</span>
+            <span class="n">cen</span><span class="p">[</span><span class="n">row</span><span class="p">,</span> <span class="n">j</span><span class="p">]</span> <span class="o">=</span> <span class="n">previous</span>
+    <span class="k">return</span> <span class="n">cen</span>
+</pre></div>
+</div>
+<div class="code-ref"><div class="code-label">onfire/core/tracing.py:142</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">fit_edge_traces</span><span class="p">(</span>
+    <span class="n">cen</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">ncoeff</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="n">ref_row</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">list</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">],</span> <span class="nb">list</span><span class="p">[</span><span class="nb">float</span><span class="p">]]:</span>
+<span class="w">    </span><span class="sd">"""Fit each tracked edge with a Legendre polynomial along dispersion.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        cen: Edge centroid array of shape ``(nspec, n_edges)``.</span>
+<span class="sd">        ncoeff: Number of polynomial coefficients (fit order ``ncoeff - 1``).</span>
+<span class="sd">        ref_row: Central row used to normalize the dispersion coordinate.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        ``(coefficients, rms)`` lists, one entry per edge. A failed fit yields</span>
+<span class="sd">        an all-NaN coefficient array and NaN RMS.</span>
+<span class="sd">    """</span>
+    <span class="n">cen</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">cen</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">nspec</span> <span class="o">=</span> <span class="n">cen</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+    <span class="k">if</span> <span class="n">ref_row</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">ref_row</span> <span class="o">=</span> <span class="p">(</span><span class="n">nspec</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span> <span class="o">//</span> <span class="mi">2</span>
+    <span class="n">xmid</span><span class="p">,</span> <span class="n">xscale</span> <span class="o">=</span> <span class="n">trace_coordinate</span><span class="p">(</span><span class="n">nspec</span><span class="p">)</span>
+    <span class="n">rows</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="n">nspec</span><span class="p">)</span>
+    <span class="n">x</span> <span class="o">=</span> <span class="n">_xcoordinate</span><span class="p">(</span><span class="n">rows</span><span class="p">,</span> <span class="n">xmid</span><span class="p">,</span> <span class="n">xscale</span><span class="p">)</span>
+
+    <span class="n">coefficients</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="n">rms</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="k">for</span> <span class="n">edge</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">cen</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">1</span><span class="p">]):</span>
+        <span class="n">values</span> <span class="o">=</span> <span class="n">cen</span><span class="p">[:,</span> <span class="n">edge</span><span class="p">]</span>
+        <span class="n">valid</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">values</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">valid</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span> <span class="o">&lt;</span> <span class="n">ncoeff</span><span class="p">:</span>
+            <span class="n">coefficients</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">full</span><span class="p">(</span><span class="n">ncoeff</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">nan</span><span class="p">))</span>
+            <span class="n">rms</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="nb">float</span><span class="p">(</span><span class="s2">"nan"</span><span class="p">))</span>
+            <span class="k">continue</span>
+        <span class="n">coeff</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">polynomial</span><span class="o">.</span><span class="n">legendre</span><span class="o">.</span><span class="n">legfit</span><span class="p">(</span><span class="n">x</span><span class="p">[</span><span class="n">valid</span><span class="p">],</span> <span class="n">values</span><span class="p">[</span><span class="n">valid</span><span class="p">],</span> <span class="n">ncoeff</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span>
+        <span class="n">fitted</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">polynomial</span><span class="o">.</span><span class="n">legendre</span><span class="o">.</span><span class="n">legval</span><span class="p">(</span><span class="n">x</span><span class="p">[</span><span class="n">valid</span><span class="p">],</span> <span class="n">coeff</span><span class="p">)</span>
+        <span class="n">coefficients</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">coeff</span><span class="p">)</span>
+        <span class="n">rms</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="nb">float</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">sqrt</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">mean</span><span class="p">((</span><span class="n">values</span><span class="p">[</span><span class="n">valid</span><span class="p">]</span> <span class="o">-</span> <span class="n">fitted</span><span class="p">)</span> <span class="o">**</span> <span class="mi">2</span><span class="p">))))</span>
+    <span class="k">return</span> <span class="n">coefficients</span><span class="p">,</span> <span class="n">rms</span>
+</pre></div>
+</div></details>
+</main>
+<script defer src="static/katex/katex.min.js"></script>
+<script defer src="static/katex/auto-render.min.js"></script>
+<script defer src="static/guide.js"></script>
+</body>
+</html>

@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Frame Table - onfire</title>
+<link rel="stylesheet" href="static/katex/katex.min.css">
+<link rel="stylesheet" href="static/pygments.css">
+<link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+<nav class="sidebar">
+<a class="brand" href="index.html">onfire</a>
+<ul><li><a href="index.html">Overview</a></li><li><a href="quickstart.html">Quickstart</a></li><li><a href="frame-table.html" aria-current="page">Frame Table</a></li><li><a href="parameter-config.html">Parameter Config</a></li><li><a href="interactive.html">Interactive analysis</a></li></ul>
+<div class="group">Reduction steps</div><ul><li><span class="todo">prep_calibrations</span></li><li><a href="trace_orders.html">trace_orders</a></li><li><span class="todo">calibrate_wavelengths</span></li><li><span class="todo">fit_tilts</span></li><li><span class="todo">process_science</span></li><li><span class="todo">find_objects</span></li><li><span class="todo">subtract_sky</span></li><li><span class="todo">extract_1d</span></li><li><span class="todo">flux_calibrate</span></li><li><span class="todo">telluric_correct</span></li><li><span class="todo">coadd_orders</span></li><li><span class="todo">extinction_correct</span></li></ul>
+</nav>
+<main>
+<h1>The Frame Table</h1>
+<p>The Frame Table is a fixed-width text file with one row per raw exposure. It is
+meant to be read and edited by a person. <code>onfire setup</code> writes it; you correct it.</p>
+<h2>Columns</h2>
+<p>| Column | Meaning |
+|--------|---------|
+| <code>idx</code> | Row number. |
+| <code>filename</code> | Raw FITS file name. |
+| <code>frame_type</code> | The role this exposure plays. <strong>The column you edit.</strong> |
+| <code>object</code> | <code>OBJECT</code> header value. |
+| <code>obstype</code> | <code>OBSTYPE</code> header value. |
+| <code>exptime</code> | Exposure time. |
+| <code>acqtime</code> | Acquisition time. |
+| <code>airmass</code> | Airmass. |
+| <code>grism</code> | <code>GRISM</code> header value. |
+| <code>instrume</code> | <code>INSTRUME</code> header value. |</p>
+<p>Lines starting with <code>#</code> are comments. The columns are fixed width, so keep values
+aligned. A value too wide for its column is rejected when the table is written.</p>
+<h2>Roles</h2>
+<p><code>frame_type</code> is one of:</p>
+<ul>
+<li><code>science</code></li>
+<li><code>standard</code></li>
+<li><code>pixelflat</code></li>
+<li><code>arc</code></li>
+<li><code>unknown</code></li>
+</ul>
+<p><code>onfire setup</code> classifies from the <code>OBSTYPE</code> header, using <code>OBJECT</code> as a fallback
+hint. Anything it cannot place becomes <code>unknown</code>. If your data uses a different
+<code>OBSTYPE</code> value, change the <code>frame_type</code> by hand.</p>
+<h2>Required calibrations</h2>
+<p>A reduction needs at least one <code>pixelflat</code> and one <code>arc</code>. <code>onfire setup</code> prints a
+warning for each one it cannot find in the raw directory. It still writes the table,
+so you can fix the roles by hand.</p>
+<h2>Reading and writing from Python</h2>
+<div class="codehilite"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">onfire.setup</span><span class="w"> </span><span class="kn">import</span> <span class="n">FrameTable</span>
+
+<span class="n">table</span> <span class="o">=</span> <span class="n">FrameTable</span><span class="o">.</span><span class="n">read</span><span class="p">(</span><span class="s2">"frames.ascii"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">table</span><span class="o">.</span><span class="n">frames</span><span class="p">))</span>
+</code></pre></div>
+</main>
+<script defer src="static/katex/katex.min.js"></script>
+<script defer src="static/katex/auto-render.min.js"></script>
+<script defer src="static/guide.js"></script>
+</body>
+</html>

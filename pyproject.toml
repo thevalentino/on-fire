@@ -20,6 +20,10 @@ dependencies = [
 test = [
     "pytest>=7.0",
 ]
+docs = [
+    "markdown>=3.5",
+    "pygments>=2.16",
+]
 
 [project.scripts]
 onfire = "onfire.cli:main"

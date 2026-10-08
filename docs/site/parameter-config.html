@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Parameter Config - onfire</title>
+<link rel="stylesheet" href="static/katex/katex.min.css">
+<link rel="stylesheet" href="static/pygments.css">
+<link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+<nav class="sidebar">
+<a class="brand" href="index.html">onfire</a>
+<ul><li><a href="index.html">Overview</a></li><li><a href="quickstart.html">Quickstart</a></li><li><a href="frame-table.html">Frame Table</a></li><li><a href="parameter-config.html" aria-current="page">Parameter Config</a></li><li><a href="interactive.html">Interactive analysis</a></li></ul>
+<div class="group">Reduction steps</div><ul><li><span class="todo">prep_calibrations</span></li><li><a href="trace_orders.html">trace_orders</a></li><li><span class="todo">calibrate_wavelengths</span></li><li><span class="todo">fit_tilts</span></li><li><span class="todo">process_science</span></li><li><span class="todo">find_objects</span></li><li><span class="todo">subtract_sky</span></li><li><span class="todo">extract_1d</span></li><li><span class="todo">flux_calibrate</span></li><li><span class="todo">telluric_correct</span></li><li><span class="todo">coadd_orders</span></li><li><span class="todo">extinction_correct</span></li></ul>
+</nav>
+<main>
+<h1>The Parameter Config</h1>
+<p>The Parameter Config is a YAML file. Whatever you do not set takes a default, so
+the file only needs the things you want to change. It is kept separate from the
+Frame Table on purpose: the Frame Table says <em>which data</em>, the config says <em>how to
+reduce it</em>.</p>
+<h2>Pipeline defaults</h2>
+<p>| Key | Default | Meaning |
+|-----|---------|---------|
+| <code>mode</code> | <code>pair_difference</code> | How science frames are background-subtracted: <code>pair_difference</code> or <code>stare</code>. |
+| <code>frames</code> | <code>frames.ascii</code> | Frame Table path. |
+| <code>output_dir</code> | <code>checkpoints</code> | Where checkpoint files are written. |
+| <code>qa_dir</code> | <code>qa</code> | Where QA Artifact HTML files are written. |
+| <code>steps</code> | <code>{}</code> | Per-step parameter overrides (below). |</p>
+<h2>Step overrides</h2>
+<p>Parameters for one step live under <code>steps:</code>, keyed by the step name:</p>
+<div class="codehilite"><pre><span></span><code><span class="nt">mode</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">pair_difference</span>
+<span class="nt">steps</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">trace_orders</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">ncoeff</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">6</span>
+<span class="w">    </span><span class="nt">maxshift</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2.5</span>
+</code></pre></div>
+
+<p>Which parameters each step accepts is listed on that step's page, under <em>How to
+call it</em>.</p>
+<h2>How a call is assembled</h2>
+<p>When a step runs, its parameters are layered, later layers winning:</p>
+<ol>
+<li>the top-level config keys (except <code>steps</code>, <code>qa_dir</code>, <code>frames</code>, <code>output_dir</code>),</li>
+<li>the step's own block under <code>steps:</code>,</li>
+<li>any parameters you pass explicitly in Python,</li>
+<li>the <code>order</code> you target, if any.</li>
+</ol>
+<p>You can see what a step would be called with, without running it:</p>
+<div class="codehilite"><pre><span></span><code><span class="n">state</span><span class="o">.</span><span class="n">resolve_call_params</span><span class="p">(</span><span class="s2">"trace_orders"</span><span class="p">)</span>
+</code></pre></div>
+
+<div class="code-ref"><div class="code-label">onfire/pipeline/state.py:649</div><div class="highlight"><pre><span></span>    <span class="k">def</span><span class="w"> </span><span class="nf">resolve_call_params</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">step</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="nb">int</span><span class="p">,</span>
+        <span class="o">*</span><span class="p">,</span>
+        <span class="n">params</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">order</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">"""Return the effective parameters a step would be called with.</span>
+
+<span class="sd">        The Parameter Config seeds the call (top-level control keys, then the</span>
+<span class="sd">        step-specific ``steps.&lt;name&gt;`` block), explicit ``params`` override it,</span>
+<span class="sd">        and a targeted ``order`` is added last. Pipeline-control keys</span>
+<span class="sd">        (``steps``, ``qa_dir``, ``frames``, ``output_dir``) are not algorithm</span>
+<span class="sd">        inputs and are never forwarded.</span>
+<span class="sd">        """</span>
+        <span class="n">name</span> <span class="o">=</span> <span class="n">step</span> <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">step</span><span class="p">,</span> <span class="nb">str</span><span class="p">)</span> <span class="k">else</span> <span class="n">step_name</span><span class="p">(</span><span class="n">step</span><span class="p">)</span>
+        <span class="n">call_params</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="n">key</span><span class="p">:</span> <span class="n">value</span>
+            <span class="k">for</span> <span class="n">key</span><span class="p">,</span> <span class="n">value</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">items</span><span class="p">()</span>
+            <span class="k">if</span> <span class="n">key</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"steps"</span><span class="p">,</span> <span class="s2">"qa_dir"</span><span class="p">,</span> <span class="s2">"frames"</span><span class="p">,</span> <span class="s2">"output_dir"</span><span class="p">)</span>
+        <span class="p">}</span>
+        <span class="n">call_params</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"steps"</span><span class="p">,</span> <span class="p">{})</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="p">{})</span> <span class="ow">or</span> <span class="p">{})</span>
+        <span class="n">call_params</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">params</span> <span class="ow">or</span> <span class="p">{})</span>
+        <span class="k">if</span> <span class="n">order</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">call_params</span><span class="o">.</span><span class="n">setdefault</span><span class="p">(</span><span class="s2">"order"</span><span class="p">,</span> <span class="n">order</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">call_params</span>
+</pre></div>
+</div>
+<h2>Loading from Python</h2>
+<div class="code-ref"><div class="code-label">onfire/pipeline/config.py:37</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">load_config</span><span class="p">(</span><span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Path</span> <span class="o">|</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""Load a YAML Parameter Config merged onto :data:`DEFAULT_CONFIG`.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        path: Path to a YAML file, or ``None`` to return the defaults.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        The resolved Parameter Config as a nested dictionary.</span>
+
+<span class="sd">    Raises:</span>
+<span class="sd">        FileNotFoundError: If ``path`` is provided but does not exist.</span>
+<span class="sd">        TypeError: If the YAML document is not a mapping.</span>
+<span class="sd">    """</span>
+    <span class="k">if</span> <span class="n">path</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">_merge</span><span class="p">(</span><span class="n">DEFAULT_CONFIG</span><span class="p">,</span> <span class="p">{})</span>
+    <span class="n">text</span> <span class="o">=</span> <span class="n">Path</span><span class="p">(</span><span class="n">path</span><span class="p">)</span><span class="o">.</span><span class="n">read_text</span><span class="p">()</span>
+    <span class="n">data</span> <span class="o">=</span> <span class="n">yaml</span><span class="o">.</span><span class="n">safe_load</span><span class="p">(</span><span class="n">text</span><span class="p">)</span> <span class="ow">or</span> <span class="p">{}</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">data</span><span class="p">,</span> <span class="nb">dict</span><span class="p">):</span>
+        <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Parameter Config must be a YAML mapping, got </span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="n">data</span><span class="p">)</span><span class="o">.</span><span class="vm">__name__</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">_merge</span><span class="p">(</span><span class="n">DEFAULT_CONFIG</span><span class="p">,</span> <span class="n">data</span><span class="p">)</span>
+</pre></div>
+</div>
+</main>
+<script defer src="static/katex/katex.min.js"></script>
+<script defer src="static/katex/auto-render.min.js"></script>
+<script defer src="static/guide.js"></script>
+</body>
+</html>

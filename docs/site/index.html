@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Overview - onfire</title>
+<link rel="stylesheet" href="static/katex/katex.min.css">
+<link rel="stylesheet" href="static/pygments.css">
+<link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+<nav class="sidebar">
+<a class="brand" href="index.html">onfire</a>
+<ul><li><a href="index.html" aria-current="page">Overview</a></li><li><a href="quickstart.html">Quickstart</a></li><li><a href="frame-table.html">Frame Table</a></li><li><a href="parameter-config.html">Parameter Config</a></li><li><a href="interactive.html">Interactive analysis</a></li></ul>
+<div class="group">Reduction steps</div><ul><li><span class="todo">prep_calibrations</span></li><li><a href="trace_orders.html">trace_orders</a></li><li><span class="todo">calibrate_wavelengths</span></li><li><span class="todo">fit_tilts</span></li><li><span class="todo">process_science</span></li><li><span class="todo">find_objects</span></li><li><span class="todo">subtract_sky</span></li><li><span class="todo">extract_1d</span></li><li><span class="todo">flux_calibrate</span></li><li><span class="todo">telluric_correct</span></li><li><span class="todo">coadd_orders</span></li><li><span class="todo">extinction_correct</span></li></ul>
+</nav>
+<main>
+<h1>onfire: the big picture</h1>
+<p>onfire reduces raw Magellan/FIRE echelle exposures (orders 11 to 31) into a
+calibrated, combined one-dimensional spectrum. It is built to be <em>inspectable</em>:
+every stage can be stopped, looked at, and re-run.</p>
+<p>This guide assumes you already know FIRE data and echelle reduction. It explains
+how onfire is organised and how to drive it, not what a flat field is.</p>
+<h2>What goes in, what comes out</h2>
+<p>Two small human-readable files describe a reduction:</p>
+<p>| Input | What it holds | Page |
+|-------|---------------|------|
+| <strong>Frame Table</strong> | One row per raw exposure, with its metadata and the role it plays (science, standard, pixelflat, arc). | <a href="frame-table.html">Frame Table</a> |
+| <strong>Parameter Config</strong> | A YAML file of defaults and per-step parameter overrides. | <a href="parameter-config.html">Parameter Config</a> |</p>
+<p>The pipeline writes an <strong>Intermediate State</strong> after every step (a FITS checkpoint
+file) and, unless you pass <code>--no-qa</code>, interactive Plotly <strong>QA Artifacts</strong> as
+standalone HTML files.</p>
+<figure class="pending"><div>figure pending: <code>overview/pipeline-flow</code></div><figcaption>Frame Table and Parameter Config in, twelve Reduction Steps, final spectrum out</figcaption></figure>
+
+<h2>Twelve Reduction Steps</h2>
+<p>The canonical sequence runs in this order. Each step takes the Intermediate State
+left by the previous one, runs one scientific computation, and leaves a new
+Intermediate State.</p>
+<ol>
+<li><code>prep_calibrations</code></li>
+<li><code>trace_orders</code></li>
+<li><code>calibrate_wavelengths</code></li>
+<li><code>fit_tilts</code></li>
+<li><code>process_science</code></li>
+<li><code>find_objects</code></li>
+<li><code>subtract_sky</code></li>
+<li><code>extract_1d</code></li>
+<li><code>flux_calibrate</code></li>
+<li><code>telluric_correct</code></li>
+<li><code>coadd_orders</code></li>
+<li><code>extinction_correct</code></li>
+</ol>
+<p>Each step has its own page in the sidebar. Steps whose page is not written yet are
+shown greyed out.</p>
+<h2>Two ways to work</h2>
+<p><strong>Batch.</strong> Run everything from the command line with <code>onfire reduce</code>, optionally
+stopping with <code>--until</code> or resuming with <code>--from</code>. See the <a href="quickstart.html">Quickstart</a>.</p>
+<p><strong>Interactive.</strong> Load an Intermediate State in Python, clone it into a <strong>State
+Clone</strong>, re-run a step (or a single order) with different parameters, compare
+against the <strong>Baseline</strong> in one figure, and <strong>Commit</strong> the clone if it is better.
+See <a href="interactive.html">Interactive analysis</a>.</p>
+<h2>Orders that fail</h2>
+<p>A failing order does not stop a batch reduction. It is recorded in the <strong>Order
+Mask</strong> with a reason, and the remaining orders carry on. Use <code>--fail-fast</code> to halt
+at the first failure instead; onfire then saves the state and prints the code to
+reproduce the failure interactively.</p>
+</main>
+<script defer src="static/katex/katex.min.js"></script>
+<script defer src="static/katex/auto-render.min.js"></script>
+<script defer src="static/guide.js"></script>
+</body>
+</html>
