@@ -23,7 +23,7 @@ Metadata recorded: `n_coadd_orders`, `n_coadd_points` and `coadd_obj_id`.
 
 **QA Artifact:** `coadd_orders`, the combined spectrum with its uncertainty.
 
-This step combines every order into one product, so it is a cross-order step: if any order is Stale, the whole coadd is Stale and cannot be trimmed order by order at Commit.
+This step combines every order into one spectrum, so the product has no order axis to trim. If any order's input is Stale, the whole coadd is Stale, and Commit discards it as a whole instead of order by order.
 
 ## How to call it
 

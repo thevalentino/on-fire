@@ -31,7 +31,7 @@
 | <code>object_orders</code> | The order number of each object. |
 | <code>object_box_radii</code> | The extraction box radius of each object. |
 | <code>object_skymask</code> | Boolean image; <code>False</code> inside an object's box, <code>True</code> where the sky may be fit. |</p>
-<p><code>obj_id</code> is unique across all orders, counting in the order the objects are listed. An order without a usable edge trace is masked with the reason <code>no order trace</code>. An object whose trace fit fails stays in the table with its own <code>masked</code> flag set.</p>
+<p><code>obj_id</code> is unique across all orders, counting in the order the objects are listed. It is renumbered on every run, including a single-order re-run, so the ids of other orders can shift. Do not keep an <code>obj_id</code> across runs. An order without a usable edge trace is masked with the reason <code>no order trace</code>. An object whose trace fit fails stays in the table with its own <code>masked</code> flag set.</p>
 <p><strong>QA Artifacts:</strong> <code>object_profiles</code> (the spatial profile of each order) and <code>object_traces</code> (the traces over the science image).</p></section>
 <section><h2>How to call it</h2><p><strong>Command line</strong></p>
 <div class="codehilite"><pre><span></span><code>onfire<span class="w"> </span>reduce<span class="w"> </span>config.yaml<span class="w"> </span>--until<span class="w"> </span>find_objects

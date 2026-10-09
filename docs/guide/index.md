@@ -5,7 +5,7 @@ order: 1
 
 onfire reduces raw Magellan/FIRE echelle exposures (orders 11 to 31) into a
 calibrated, combined one-dimensional spectrum. It is built to be *inspectable*:
-every stage can be stopped, looked at, and re-run.
+every step can be stopped, looked at, and re-run.
 
 This guide assumes you already know FIRE data and echelle reduction. It explains
 how onfire is organised and how to drive it, not what a flat field is.

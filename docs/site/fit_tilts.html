@@ -29,7 +29,7 @@
 | <code>tilt_coeffs</code> | Legendre coefficients of each order's tilt surface. |
 | <code>tilt_surface_coeffs</code> | Coefficients of one global surface pooled across all orders. |
 | <code>tilt_measurements</code> | Every measurement: <code>order</code>, <code>spec_pixel</code>, <code>dspat</code>, <code>delta</code> and the fitted <code>model</code>. |</p>
-<p>An order is masked with the reason <code>no arc spectrum</code>, <code>too few arc lines for tilts</code> (fewer than three detected lines) or <code>tilt tracing failed</code> (fewer than four usable measurements).</p>
+<p>An order is added to the Order Mask with the reason <code>no arc spectrum</code>, <code>too few arc lines for tilts</code> (fewer than three detected lines) or <code>tilt tracing failed</code> (fewer than four usable measurements).</p>
 <p><strong>QA Artifacts:</strong> <code>tilt_residuals</code> (fit residuals against dispersion pixel) and <code>tilt_map</code> (the tilt model for the first valid order).</p></section>
 <section><h2>How to call it</h2><p><strong>Command line</strong></p>
 <div class="codehilite"><pre><span></span><code>onfire<span class="w"> </span>reduce<span class="w"> </span>config.yaml<span class="w"> </span>--until<span class="w"> </span>fit_tilts
@@ -67,7 +67,7 @@ s = \frac{\text{spec pixel}}{n_\mathrm{spec}-1}, \quad u = \frac{\text{dspat}}{\
 $$</p>
 <p>with <code>spec_order</code> terms in $j$ and <code>spat_order</code> terms in $k$, and 3-sigma robust rejection. The quoted tilt angle is the arctangent of the local slope $\partial\delta/\partial(\text{dspat})$ at the middle of the order.</p>
 <p><strong>4. Global surface.</strong> The measurements from all orders are also pooled into one global surface, stored as <code>tilt_surface_coeffs</code>.</p>
-<p><strong>Single-order re-runs (Cross-Order Regularization).</strong> With <code>order=</code> the target order is not fit freely. A low-order correction (one term per axis) to the global surface is fit to that order's residuals instead. A faint order then inherits the instrument-wide distortion instead of being dropped, and an order with fewer than four measurements uses the global surface unchanged.</p></details>
+<p><strong>Single-order re-runs (Cross-Order Regularization).</strong> With <code>order=</code> the target order is not fit freely. A low-order correction (one term per axis) to the global surface is fit to that order's residuals instead. A faint order with enough measurements then inherits the instrument-wide distortion. An order with fewer than four measurements is still masked with <code>tilt tracing failed</code>, as in a full run. After a single-order run, <code>tilt_measurements</code> holds only the target order's measurements.</p></details>
 <details><summary>Where this happens in the code</summary><p>The Step Engine:</p>
 <div class="code-ref"><div class="code-label">onfire/core/engines.py:844</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">fit_tilts</span><span class="p">(</span>
     <span class="n">products</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>

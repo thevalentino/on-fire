@@ -31,7 +31,7 @@
 | <code>telluric_flux</code>, <code>telluric_var</code>, <code>telluric_ivar</code>, <code>telluric_mask</code> | The corrected spectra, with one column per object, from the <strong>active</strong> method. |
 | <code>telluric_transmission</code>, <code>telluric_wave</code> | The transmission divided out, and the wavelength grid, from the active method. |
 | <code>telluric</code> | Table with one row per object: <code>order</code>, <code>obj_id</code>, <code>method</code>, <code>rms</code>, <code>ncoeff</code> and <code>masked</code>. |
-| <code>telluric_empirical_*</code>, <code>telluric_grid_*</code> | The same set of products for each method that could be computed, so both can be compared. |</p>
+| <code>telluric_empirical_*</code>, <code>telluric_grid_*</code> | For each method that could be computed, its <code>_transmission</code>, <code>_flux</code>, <code>_var</code>, <code>_ivar</code> and <code>_mask</code>, so both can be compared. Unlike the active set, they have no <code>_wave</code>. |</p>
 <p>Metadata recorded: <code>telluric_method</code>, <code>n_objects_telluric_corrected</code>, <code>telluric_available_empirical</code> and <code>telluric_available_grid</code>.</p>
 <p><strong>QA Artifacts:</strong> <code>telluric_transmission</code> (empirical and grid curves per object) and <code>telluric_spectra</code> (corrected spectra over the uncorrected ones).</p></section>
 <section><h2>How to call it</h2><p><strong>Command line</strong></p>

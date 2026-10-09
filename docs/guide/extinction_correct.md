@@ -25,7 +25,7 @@ Metadata recorded: `ebv`, `rv` and `n_extinction_points`.
 
 **QA Artifact:** `extinction_correct`, the dereddened spectrum over the observed one.
 
-This is a cross-order step, like `coadd_orders`: if its input is Stale, the whole product is.
+Like `coadd_orders`, this step works on a single spectrum that combines every order, so it has no order axis to trim. If its input is Stale, the whole product is Stale, and Commit discards it as a whole instead of order by order.
 
 ## How to call it
 

@@ -33,7 +33,7 @@
 | <code>final_mask</code> | Boolean mask of valid samples. |</p>
 <p>Metadata recorded: <code>ebv</code>, <code>rv</code> and <code>n_extinction_points</code>.</p>
 <p><strong>QA Artifact:</strong> <code>extinction_correct</code>, the dereddened spectrum over the observed one.</p>
-<p>This is a cross-order step, like <code>coadd_orders</code>: if its input is Stale, the whole product is.</p></section>
+<p>Like <code>coadd_orders</code>, this step works on a single spectrum that combines every order, so it has no order axis to trim. If its input is Stale, the whole product is Stale, and Commit discards it as a whole instead of order by order.</p></section>
 <section><h2>How to call it</h2><p><strong>Command line</strong></p>
 <div class="codehilite"><pre><span></span><code>onfire<span class="w"> </span>reduce<span class="w"> </span>config.yaml<span class="w"> </span>--until<span class="w"> </span>extinction_correct
 </code></pre></div>

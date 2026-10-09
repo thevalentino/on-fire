@@ -19,7 +19,7 @@ order: 40
 | `tilt_surface_coeffs` | Coefficients of one global surface pooled across all orders. |
 | `tilt_measurements` | Every measurement: `order`, `spec_pixel`, `dspat`, `delta` and the fitted `model`. |
 
-An order is masked with the reason `no arc spectrum`, `too few arc lines for tilts` (fewer than three detected lines) or `tilt tracing failed` (fewer than four usable measurements).
+An order is added to the Order Mask with the reason `no arc spectrum`, `too few arc lines for tilts` (fewer than three detected lines) or `tilt tracing failed` (fewer than four usable measurements).
 
 **QA Artifacts:** `tilt_residuals` (fit residuals against dispersion pixel) and `tilt_map` (the tilt model for the first valid order).
 
@@ -81,7 +81,7 @@ with `spec_order` terms in $j$ and `spat_order` terms in $k$, and 3-sigma robust
 
 **4. Global surface.** The measurements from all orders are also pooled into one global surface, stored as `tilt_surface_coeffs`.
 
-**Single-order re-runs (Cross-Order Regularization).** With `order=` the target order is not fit freely. A low-order correction (one term per axis) to the global surface is fit to that order's residuals instead. A faint order then inherits the instrument-wide distortion instead of being dropped, and an order with fewer than four measurements uses the global surface unchanged.
+**Single-order re-runs (Cross-Order Regularization).** With `order=` the target order is not fit freely. A low-order correction (one term per axis) to the global surface is fit to that order's residuals instead. A faint order with enough measurements then inherits the instrument-wide distortion. An order with fewer than four measurements is still masked with `tilt tracing failed`, as in a full run. After a single-order run, `tilt_measurements` holds only the target order's measurements.
 
 ## Where this happens in the code
 

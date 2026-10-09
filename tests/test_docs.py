@@ -15,6 +15,8 @@ REPO = Path(__file__).resolve().parents[1]
 
 
 def _load_build():
+    if "docs_build" in sys.modules:
+        return sys.modules["docs_build"]
     spec = importlib.util.spec_from_file_location("docs_build", REPO / "docs" / "build.py")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -125,7 +127,7 @@ def test_code_reference_to_missing_function_fails_the_build(guide, tmp_path):
     (root / "pkg").mkdir(parents=True)
     (root / "pkg" / "mod.py").write_text(SAMPLE_MODULE)
 
-    with pytest.raises(Exception, match="renamed_away"):
+    with pytest.raises(_load_build().CodeReferenceError, match="renamed_away"):
         guide({"page": "{{code: pkg/mod.py::renamed_away}}\n"}, root=root)
 
 
@@ -187,7 +189,7 @@ def test_step_page_lists_sections_in_the_fixed_order(guide):
 def test_step_page_missing_a_section_fails_the_build(guide):
     broken = STEP_PAGE.replace("## Figures\n\n{{figure: trace_orders/edge-fit \"Order edges\"}}\n\n", "")
 
-    with pytest.raises(Exception, match="Figures"):
+    with pytest.raises(_load_build().StepPageError, match="Figures"):
         guide({"trace_orders": broken})
 
 

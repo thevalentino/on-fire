@@ -21,7 +21,7 @@ Both corrections are computed whenever their inputs exist. One of them is then m
 | `telluric_flux`, `telluric_var`, `telluric_ivar`, `telluric_mask` | The corrected spectra, with one column per object, from the **active** method. |
 | `telluric_transmission`, `telluric_wave` | The transmission divided out, and the wavelength grid, from the active method. |
 | `telluric` | Table with one row per object: `order`, `obj_id`, `method`, `rms`, `ncoeff` and `masked`. |
-| `telluric_empirical_*`, `telluric_grid_*` | The same set of products for each method that could be computed, so both can be compared. |
+| `telluric_empirical_*`, `telluric_grid_*` | For each method that could be computed, its `_transmission`, `_flux`, `_var`, `_ivar` and `_mask`, so both can be compared. Unlike the active set, they have no `_wave`. |
 
 Metadata recorded: `telluric_method`, `n_objects_telluric_corrected`, `telluric_available_empirical` and `telluric_available_grid`.
 

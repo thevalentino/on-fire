@@ -32,6 +32,9 @@
 <code>edge trace fit failed</code>; the other orders are unaffected.</p></section>
 <section><h2>How to call it</h2><p><strong>Command line</strong></p>
 <div class="codehilite"><pre><span></span><code>onfire<span class="w"> </span>reduce<span class="w"> </span>config.yaml<span class="w"> </span>--until<span class="w"> </span>trace_orders
+
+<span class="c1"># later, continue with the next step from the saved state</span>
+onfire<span class="w"> </span>reduce<span class="w"> </span>config.yaml<span class="w"> </span>--from<span class="w"> </span>calibrate_wavelengths
 </code></pre></div>
 
 <p><strong>Parameter Config</strong></p>
@@ -55,11 +58,12 @@ raises <code>ValueError</code>.</p></section>
 <details><summary>Numerical methods and idea</summary><p>The goal is two smooth curves per order, one for the left edge and one for the
 right, that later steps use to know where each order sits on the detector.</p>
 <p><strong>1. Find edges at the reference row.</strong> The flat is collapsed along dispersion
-(median over rows) and smoothed with a boxcar. The peak of this spatial profile
+(median over rows) and smoothed with a 7-pixel boxcar. The peak of this spatial profile
 near each expected order position is taken as the order centre. The left edge is
 the strongest <em>rising</em> spatial gradient between the previous order and the centre.
 The right edge is the strongest <em>falling</em> gradient between the centre and the next
-order.</p>
+order. Each search covers at most half the gap to the neighbouring order (the smaller
+gap, for an order with neighbours on both sides).</p>
 <p><strong>2. Follow each edge along dispersion.</strong> Starting from the reference row (the
 middle of the detector) and working outward in both directions, each edge position
 is recentred row by row. The new position is the centroid of the positive part of
@@ -70,6 +74,8 @@ flipped, so both edges look like a rising edge to the centroid.</p>
 <p>$$
 x = \frac{\text{row} - x_\mathrm{mid}}{x_\mathrm{scale}}, \qquad
 x_\mathrm{mid} = \frac{n_\mathrm{spec} - 1}{2},
+\qquad
+x_\mathrm{scale} = x_\mathrm{mid} \ (\text{or } 1 \text{ if } x_\mathrm{mid} = 0),
 $$</p>
 <p>each tracked edge $y(x)$ is fit with a Legendre series of <code>ncoeff</code> terms,</p>
 <p>$$

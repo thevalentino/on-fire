@@ -21,7 +21,7 @@ order: 10
 
 Metadata recorded: `n_flats`, `n_bad_pixels`, `flat_good` (every pixel had at least one usable exposure) and `flat_nused_median` (median number of exposures used per pixel).
 
-**QA Artifact:** `flat`, a heatmap titled "Master flat".
+**QA Artifact:** `flat`, a heatmap titled "Master flat". It plots the normalised flat (`flat_norm`), not the raw combined `flat`.
 
 ## How to call it
 

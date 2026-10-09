@@ -23,3 +23,17 @@ Items for author review (also marked "to verify" or called out on the pages):
 - `trace_orders` (ticket 01): origin of `FIRE_ORDER_SPAT_POS` still unverified.
 - Parameter keys shown in the YAML blocks are checked by `tests/test_docs.py` only against the string literals in `engines.py`, so the defaults quoted on each page were checked by reading the code, not by a test.
 - Steps that do not read `order=` and say so on their pages: `prep_calibrations`, `process_science`, `subtract_sky`, `flux_calibrate`, `telluric_correct`, `coadd_orders`, `extinction_correct`.
+
+### Code-review follow-up (fixed)
+
+- `fit_tilts`: removed the claim that a thin order falls back to the global surface (the engine masks it first); noted that `tilt_measurements` holds only the target order after a single-order run.
+- `telluric_correct`: candidate products listed exactly (no `_wave`).
+- `calibrate_wavelengths`: single-order run uses `max(match_toler, 3.0)` and does not refit the surface; `line_ids` holds only the target order.
+- `prep_calibrations`: the QA heatmap plots `flat_norm`.
+- `find_objects`: `obj_id` is renumbered on every run.
+- `flux_calibrate`: `standard_flux` is passed through as an output.
+- `coadd_orders` and `extinction_correct`: say why they cannot be trimmed order by order, and no longer call themselves "cross-order steps" (too close to Cross-Order Regularization).
+- "masked" now reads "added to the Order Mask" on the step pages.
+- From the ticket 01 review: "stage" reworded in `index.md`; `order` precedence corrected on the Parameter Config page; `x_scale` defined, the 7-pixel boxcar and edge search width added, and a `--from` example added on `trace_orders`; `pytest.raises` now names `CodeReferenceError` and `StepPageError`.
+
+Not done: refactoring `build()`, a typed front-matter model, and widening the step-name drift check beyond the CLI and `run_step`-style contexts.

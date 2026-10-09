@@ -39,8 +39,9 @@ When a step runs, its parameters are layered, later layers winning:
 
 1. the top-level config keys (except `steps`, `qa_dir`, `frames`, `output_dir`),
 2. the step's own block under `steps:`,
-3. any parameters you pass explicitly in Python,
-4. the `order` you target, if any.
+3. any parameters you pass explicitly in Python.
+
+A targeted `order` is added last, but only if no layer above already set `order`. If a config or `params` value for `order` exists, it wins over the `order=` argument.
 
 You can see what a step would be called with, without running it:
 

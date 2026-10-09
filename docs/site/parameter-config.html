@@ -44,9 +44,9 @@ call it</em>.</p>
 <ol>
 <li>the top-level config keys (except <code>steps</code>, <code>qa_dir</code>, <code>frames</code>, <code>output_dir</code>),</li>
 <li>the step's own block under <code>steps:</code>,</li>
-<li>any parameters you pass explicitly in Python,</li>
-<li>the <code>order</code> you target, if any.</li>
+<li>any parameters you pass explicitly in Python.</li>
 </ol>
+<p>A targeted <code>order</code> is added last, but only if no layer above already set <code>order</code>. If a config or <code>params</code> value for <code>order</code> exists, it wins over the <code>order=</code> argument.</p>
 <p>You can see what a step would be called with, without running it:</p>
 <div class="codehilite"><pre><span></span><code><span class="n">state</span><span class="o">.</span><span class="n">resolve_call_params</span><span class="p">(</span><span class="s2">"trace_orders"</span><span class="p">)</span>
 </code></pre></div>

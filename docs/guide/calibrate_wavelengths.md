@@ -87,7 +87,7 @@ The idea is to avoid identifying lines from scratch. Each order has an archived 
 
 **6. Global surface.** All identified lines from all orders are fit together with a two-dimensional Legendre surface in pixel and order number, with `nspec_coeff` terms along pixel and `norder_coeff` along order (coordinates scaled to $[0,1]$). This needs at least `nspec_coeff * norder_coeff` matched lines; otherwise the stored surface is just a copy of the per-order solutions.
 
-**Single-order re-runs and Cross-Order Regularization.** When `order` is given and a solution exists, the order is not solved from the archive again. Its detected lines are matched against the existing global surface as the prior (or the previous per-order solution if there is no surface). A smooth low-order correction to the prior is fit to the line residuals, so a faint order inherits the instrument-wide solution instead of failing. With fewer than three matches the prior is used unchanged.
+**Single-order re-runs and Cross-Order Regularization.** When `order` is given and a solution exists, the order is not solved from the archive again. Its detected lines are matched against the existing global surface as the prior (or the previous per-order solution if there is no surface). A smooth low-order correction to the prior is fit to the line residuals, so a faint order inherits the instrument-wide solution instead of failing. The matching tolerance is the larger of `match_toler` and 3.0. With fewer than three matches the prior is used unchanged. The global surface is not refit in a single-order run, so `wave_surface` stays as it was, and `line_ids` then lists only the target order's lines.
 
 ## Where this happens in the code
 

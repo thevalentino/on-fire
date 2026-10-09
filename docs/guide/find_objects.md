@@ -21,7 +21,7 @@ order: 60
 | `object_box_radii` | The extraction box radius of each object. |
 | `object_skymask` | Boolean image; `False` inside an object's box, `True` where the sky may be fit. |
 
-`obj_id` is unique across all orders, counting in the order the objects are listed. An order without a usable edge trace is masked with the reason `no order trace`. An object whose trace fit fails stays in the table with its own `masked` flag set.
+`obj_id` is unique across all orders, counting in the order the objects are listed. It is renumbered on every run, including a single-order re-run, so the ids of other orders can shift. Do not keep an `obj_id` across runs. An order without a usable edge trace is masked with the reason `no order trace`. An object whose trace fit fails stays in the table with its own `masked` flag set.
 
 **QA Artifacts:** `object_profiles` (the spatial profile of each order) and `object_traces` (the traces over the science image).
 

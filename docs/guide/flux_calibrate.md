@@ -25,7 +25,7 @@ order: 90
 | `standard_true` | The true spectrum of the standard on each order's wavelength grid. |
 | `flux`, `flux_var`, `flux_ivar`, `flux_mask` | The calibrated science spectra, with one column per object like the `extract_1d` matrices. |
 
-An order is masked with the reason `no standard star spectrum` or `sensitivity fit failed`. Objects in a masked order get no calibrated flux.
+An order is added to the Order Mask with the reason `no standard star spectrum` or `sensitivity fit failed`. Objects in a masked order get no calibrated flux. The input `standard_flux` is also passed through unchanged as an output product.
 
 **QA Artifacts:** `sensitivity` and `flux_calibration`.
 

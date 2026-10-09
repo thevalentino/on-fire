@@ -28,6 +28,9 @@ An order whose edge fit fails is flagged in the Order Mask with the reason
 
 ```bash
 onfire reduce config.yaml --until trace_orders
+
+# later, continue with the next step from the saved state
+onfire reduce config.yaml --from calibrate_wavelengths
 ```
 
 **Parameter Config**
@@ -62,11 +65,12 @@ The goal is two smooth curves per order, one for the left edge and one for the
 right, that later steps use to know where each order sits on the detector.
 
 **1. Find edges at the reference row.** The flat is collapsed along dispersion
-(median over rows) and smoothed with a boxcar. The peak of this spatial profile
+(median over rows) and smoothed with a 7-pixel boxcar. The peak of this spatial profile
 near each expected order position is taken as the order centre. The left edge is
 the strongest *rising* spatial gradient between the previous order and the centre.
 The right edge is the strongest *falling* gradient between the centre and the next
-order.
+order. Each search covers at most half the gap to the neighbouring order (the smaller
+gap, for an order with neighbours on both sides).
 
 **2. Follow each edge along dispersion.** Starting from the reference row (the
 middle of the detector) and working outward in both directions, each edge position
@@ -80,6 +84,8 @@ flipped, so both edges look like a rising edge to the centroid.
 $$
 x = \frac{\text{row} - x_\mathrm{mid}}{x_\mathrm{scale}}, \qquad
 x_\mathrm{mid} = \frac{n_\mathrm{spec} - 1}{2},
+\qquad
+x_\mathrm{scale} = x_\mathrm{mid} \ (\text{or } 1 \text{ if } x_\mathrm{mid} = 0),
 $$
 
 each tracked edge $y(x)$ is fit with a Legendre series of `ncoeff` terms,

@@ -30,7 +30,7 @@
 | <code>flat_norm</code> | <code>flat</code> divided by its smooth response along dispersion. This is what <code>trace_orders</code> uses. |
 | <code>bad_pixel_mask</code> | Boolean mask, <code>True</code> for bad pixels. |</p>
 <p>Metadata recorded: <code>n_flats</code>, <code>n_bad_pixels</code>, <code>flat_good</code> (every pixel had at least one usable exposure) and <code>flat_nused_median</code> (median number of exposures used per pixel).</p>
-<p><strong>QA Artifact:</strong> <code>flat</code>, a heatmap titled "Master flat".</p></section>
+<p><strong>QA Artifact:</strong> <code>flat</code>, a heatmap titled "Master flat". It plots the normalised flat (<code>flat_norm</code>), not the raw combined <code>flat</code>.</p></section>
 <section><h2>How to call it</h2><p><strong>Command line</strong></p>
 <div class="codehilite"><pre><span></span><code>onfire<span class="w"> </span>reduce<span class="w"> </span>config.yaml<span class="w"> </span>--until<span class="w"> </span>prep_calibrations
 </code></pre></div>
