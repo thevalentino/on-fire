@@ -44,8 +44,7 @@ Intermediate State.
 11. `coadd_orders`
 12. `extinction_correct`
 
-Each step has its own page in the sidebar. Steps whose page is not written yet are
-shown greyed out.
+Each step has its own page in the sidebar.
 
 ## Two ways to work
 

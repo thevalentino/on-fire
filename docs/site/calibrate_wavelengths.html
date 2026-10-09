@@ -1,0 +1,618 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>calibrate_wavelengths - onfire</title>
+<link rel="stylesheet" href="static/katex/katex.min.css">
+<link rel="stylesheet" href="static/pygments.css">
+<link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+<nav class="sidebar">
+<a class="brand" href="index.html">onfire</a>
+<ul><li><a href="index.html">Overview</a></li><li><a href="quickstart.html">Quickstart</a></li><li><a href="frame-table.html">Frame Table</a></li><li><a href="parameter-config.html">Parameter Config</a></li><li><a href="interactive.html">Interactive analysis</a></li></ul>
+<div class="group">Reduction steps</div><ul><li><a href="prep_calibrations.html">prep_calibrations</a></li><li><a href="trace_orders.html">trace_orders</a></li><li><a href="calibrate_wavelengths.html" aria-current="page">calibrate_wavelengths</a></li><li><a href="fit_tilts.html">fit_tilts</a></li><li><a href="process_science.html">process_science</a></li><li><a href="find_objects.html">find_objects</a></li><li><a href="subtract_sky.html">subtract_sky</a></li><li><a href="extract_1d.html">extract_1d</a></li><li><a href="flux_calibrate.html">flux_calibrate</a></li><li><a href="telluric_correct.html">telluric_correct</a></li><li><a href="coadd_orders.html">coadd_orders</a></li><li><a href="extinction_correct.html">extinction_correct</a></li></ul>
+</nav>
+<main>
+<h1>calibrate_wavelengths</h1>
+<p class="purpose">Find the emission lines in the arc spectrum of every order, identify them against the bundled FIRE archive, and fit a wavelength solution per order plus one global solution across orders.</p>
+<section><h2>Inputs and outputs</h2><p><strong>Reads</strong></p>
+<ul>
+<li><code>order_traces</code> from <code>trace_orders</code>, to know where each order lies.</li>
+<li><code>raw_arcs</code> (or an existing <code>arc_image</code>): the arc exposures, averaged into one image.</li>
+<li>Frame Table role loaded for this step: <code>arc</code>.</li>
+<li>The bundled FIRE archive spectra and OH/arc line list, unless you point to your own files (see <code>template_path</code> and <code>line_list_path</code> below).</li>
+</ul>
+<p><strong>Writes</strong></p>
+<p>| Product | Contents |
+|---------|----------|
+| <code>arc_image</code> | The combined arc image. |
+| <code>arc_spectra</code>, <code>order_centers</code>, <code>order_halfwidths</code> | The extracted 1D arc spectrum per order, and where in the image it was taken. |
+| <code>wavelengths</code> | Table with one row per order, including its fit quality and <code>masked</code> flag. |
+| <code>wave_soln</code> | Wavelength at every dispersion pixel for every order, shape <code>(nspec, 21)</code>. |
+| <code>wave_coeffs</code> | Legendre coefficients of each order's 1D solution. |
+| <code>wave_surface</code>, <code>wave_surface_coeffs</code> | The global 2D pixel-versus-order solution and its coefficients. |
+| <code>line_ids</code> | Table of every identified line: <code>order</code>, <code>pixel</code>, <code>wave</code>. |</p>
+<p>An order is added to the Order Mask with the reason <code>no arc spectrum</code> (no usable trace or no archive template for it) or <code>insufficient line identifications</code>.</p>
+<p><strong>QA Artifacts:</strong> <code>wavelength_residuals</code> and <code>wavelength_identifications</code>.</p></section>
+<section><h2>How to call it</h2><p><strong>Command line</strong></p>
+<div class="codehilite"><pre><span></span><code>onfire<span class="w"> </span>reduce<span class="w"> </span>config.yaml<span class="w"> </span>--until<span class="w"> </span>calibrate_wavelengths
+</code></pre></div>
+
+<p><strong>Parameter Config</strong></p>
+<div class="codehilite"><pre><span></span><code><span class="nt">steps</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">calibrate_wavelengths</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">ncoeff</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5</span><span class="w">            </span><span class="c1"># coefficients of each order's stored 1D solution (default 5)</span>
+<span class="w">    </span><span class="nt">arc_box_rad</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3.0</span><span class="w">     </span><span class="c1"># half-width in pixels of the box used to extract the arc spectrum (default 3.0)</span>
+<span class="w">    </span><span class="nt">sigdetect</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5.0</span><span class="w">       </span><span class="c1"># line-detection threshold in noise sigma (default 5.0)</span>
+<span class="w">    </span><span class="nt">fwhm</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4.0</span><span class="w">            </span><span class="c1"># expected line FWHM in pixels (default 4.0)</span>
+<span class="w">    </span><span class="nt">match_toler</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2.0</span><span class="w">     </span><span class="c1"># matching tolerance in pixels of dispersion (default 2.0)</span>
+<span class="w">    </span><span class="nt">n_first</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span><span class="w">           </span><span class="c1"># polynomial order of the first-pass fit (default 2)</span>
+<span class="w">    </span><span class="nt">n_final</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4</span><span class="w">           </span><span class="c1"># polynomial order of the final fit (default 4)</span>
+<span class="w">    </span><span class="nt">nspec_coeff</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4</span><span class="w">       </span><span class="c1"># global surface: coefficients along the pixel axis (default 4)</span>
+<span class="w">    </span><span class="nt">norder_coeff</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">6</span><span class="w">      </span><span class="c1"># global surface: coefficients along the order axis (default 6)</span>
+<span class="w">    </span><span class="c1"># template_path: my_archive.fits   # optional replacement for the bundled archive</span>
+<span class="w">    </span><span class="c1"># line_list_path: my_lines.dat     # optional replacement for the bundled line list</span>
+</code></pre></div>
+
+<p><strong>Python</strong>, re-doing one order that failed, on a State Clone:</p>
+<div class="codehilite"><pre><span></span><code><span class="n">clone</span> <span class="o">=</span> <span class="n">baseline</span><span class="o">.</span><span class="n">run_step</span><span class="p">(</span>
+    <span class="s2">"calibrate_wavelengths"</span><span class="p">,</span> <span class="n">params</span><span class="o">=</span><span class="p">{</span><span class="s2">"sigdetect"</span><span class="p">:</span> <span class="mf">4.0</span><span class="p">},</span> <span class="n">clone</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">order</span><span class="o">=</span><span class="mi">13</span>
+<span class="p">)</span>
+<span class="n">fig</span> <span class="o">=</span> <span class="n">baseline</span><span class="o">.</span><span class="n">compare</span><span class="p">(</span><span class="n">clone</span><span class="p">,</span> <span class="s2">"calibrate_wavelengths"</span><span class="p">)</span>
+</code></pre></div>
+
+<p>A targeted run needs a previous wavelength solution to refine. Without one, <code>order=</code> has no effect and every order is solved.</p></section>
+<section><h2>Figures</h2><figure class="pending"><div>figure pending: <code>calibrate_wavelengths/residuals</code></div><figcaption>Line-fit residuals per order from the wavelength_residuals QA Artifact</figcaption></figure>
+
+<figure class="pending"><div>figure pending: <code>calibrate_wavelengths/identifications</code></div><figcaption>Arc spectrum of one order with identified lines marked</figcaption></figure></section>
+<details><summary>Numerical methods and idea</summary><p>The idea is to avoid identifying lines from scratch. Each order has an archived arc spectrum with a known wavelength scale. The step aligns the observed spectrum to that archive, uses the alignment to guess each line's wavelength, and snaps the guess to the nearest true line in the line list.</p>
+<p><strong>1. Extract an arc spectrum per order.</strong> The arc image is summed over a box of $\pm$<code>arc_box_rad</code> pixels around the order centre, which is the midpoint of the fitted left and right edges from <code>trace_orders</code>, row by row.</p>
+<p><strong>2. Detect lines.</strong> The continuum is estimated with a running median filter, iteratively clipped so lines do not pull it up. After subtracting it, the noise is the robust scatter $1.4826 \times \mathrm{MAD}$. Local maxima above <code>sigdetect</code> times that noise, separated by at least one <code>fwhm</code>, are kept as lines. Each line centre is the flux-weighted centroid within $\pm 1.25\,$<code>fwhm</code> pixels.</p>
+<p><strong>3. Align to the archive.</strong> The observed and archived spectra are cross-correlated (using Fourier transforms) to find a pixel shift. The shift maps each detected line to an archive pixel, and the archive's wavelength scale turns that into a guessed wavelength.</p>
+<p><strong>4. Match to the line list.</strong> Each guess is matched to the nearest rest wavelength in the line list, accepted if closer than <code>match_toler</code> pixels' worth of wavelength. The tolerance is <code>match_toler</code> times the archive dispersion.</p>
+<p><strong>5. Fit and refine.</strong> The matched lines are fit with a Legendre polynomial of order <code>n_first</code> in pixel, with 3-sigma robust rejection. The fit is then used to predict where all detected lines should fall, new matches are added, and the fit is repeated with a higher order, up to <code>n_final</code>, for at most six iterations. An order with fewer than three detected lines, or fewer than three matches, is masked.</p>
+<p><strong>6. Global surface.</strong> All identified lines from all orders are fit together with a two-dimensional Legendre surface in pixel and order number, with <code>nspec_coeff</code> terms along pixel and <code>norder_coeff</code> along order (coordinates scaled to $[0,1]$). This needs at least <code>nspec_coeff * norder_coeff</code> matched lines; otherwise the stored surface is just a copy of the per-order solutions.</p>
+<p><strong>Single-order re-runs and Cross-Order Regularization.</strong> When <code>order</code> is given and a solution exists, the order is not solved from the archive again. Its detected lines are matched against the existing global surface as the prior (or the previous per-order solution if there is no surface). A smooth low-order correction to the prior is fit to the line residuals, so a faint order inherits the instrument-wide solution instead of failing. With fewer than three matches the prior is used unchanged.</p></details>
+<details><summary>Where this happens in the code</summary><p>The Step Engine handles the full-run and single-order branches and assembles the products:</p>
+<div class="code-ref"><div class="code-label">onfire/core/engines.py:556</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">calibrate_wavelengths</span><span class="p">(</span>
+    <span class="n">products</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+    <span class="n">meta</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+    <span class="n">params</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">StepResult</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Identify arc/OH lines and fit 1D dispersion solutions (reduction step 3).</span>
+
+<span class="sd">    In a full run every order is reidentified against the bundled FIRE archive</span>
+<span class="sd">    and a global 2D pixel-vs-order surface is fit across the orders. When</span>
+<span class="sd">    ``params['order']`` targets a single order and a previous solution exists,</span>
+<span class="sd">    that order is refined with cross-order regularization from the global</span>
+<span class="sd">    surface while all other orders keep their fits.</span>
+<span class="sd">    """</span>
+    <span class="kn">from</span><span class="w"> </span><span class="nn">onfire.data</span><span class="w"> </span><span class="kn">import</span> <span class="n">load_fire_line_list</span><span class="p">,</span> <span class="n">load_fire_template</span>
+
+    <span class="n">arcimg</span> <span class="o">=</span> <span class="n">_combine_arcs</span><span class="p">(</span><span class="n">products</span><span class="p">)</span>
+    <span class="n">traces</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"order_traces"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">traces</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="s2">"calibrate_wavelengths requires an 'order_traces' product; "</span>
+            <span class="s2">"run trace_orders first"</span>
+        <span class="p">)</span>
+    <span class="n">nspec</span> <span class="o">=</span> <span class="n">arcimg</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+    <span class="n">ncoeff</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"ncoeff"</span><span class="p">,</span> <span class="mi">5</span><span class="p">))</span>
+    <span class="n">box_rad</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"arc_box_rad"</span><span class="p">,</span> <span class="mf">3.0</span><span class="p">))</span>
+    <span class="n">sigdetect</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"sigdetect"</span><span class="p">,</span> <span class="mf">5.0</span><span class="p">))</span>
+    <span class="n">fwhm</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"fwhm"</span><span class="p">,</span> <span class="mf">4.0</span><span class="p">))</span>
+    <span class="n">match_toler</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"match_toler"</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">))</span>
+    <span class="n">n_first</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"n_first"</span><span class="p">,</span> <span class="mi">2</span><span class="p">))</span>
+    <span class="n">n_final</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"n_final"</span><span class="p">,</span> <span class="mi">4</span><span class="p">))</span>
+    <span class="n">nspec_coeff</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"nspec_coeff"</span><span class="p">,</span> <span class="mi">4</span><span class="p">))</span>
+    <span class="n">norder_coeff</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"norder_coeff"</span><span class="p">,</span> <span class="mi">6</span><span class="p">))</span>
+
+    <span class="n">template</span> <span class="o">=</span> <span class="n">load_fire_template</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"template_path"</span><span class="p">))</span>
+    <span class="n">line_list</span> <span class="o">=</span> <span class="n">load_fire_line_list</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"line_list_path"</span><span class="p">))</span>
+    <span class="n">line_waves</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">line_list</span><span class="p">[</span><span class="s2">"wave"</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">template_orders</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">template</span><span class="p">[</span><span class="s2">"order"</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">int</span><span class="p">)</span>
+    <span class="n">template_spectra</span> <span class="o">=</span> <span class="p">{</span>
+        <span class="nb">int</span><span class="p">(</span><span class="n">order</span><span class="p">):</span> <span class="p">(</span>
+            <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">template</span><span class="p">[</span><span class="s2">"wave"</span><span class="p">][</span><span class="n">i</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">),</span>
+            <span class="n">np</span><span class="o">.</span><span class="n">abs</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">template</span><span class="p">[</span><span class="s2">"flux"</span><span class="p">][</span><span class="n">i</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)),</span>
+        <span class="p">)</span>
+        <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="n">order</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">template_orders</span><span class="p">)</span>
+    <span class="p">}</span>
+
+    <span class="n">spectra</span><span class="p">,</span> <span class="n">centers</span><span class="p">,</span> <span class="n">widths</span> <span class="o">=</span> <span class="n">_extract_order_spectra</span><span class="p">(</span><span class="n">arcimg</span><span class="p">,</span> <span class="n">traces</span><span class="p">,</span> <span class="n">box_rad</span><span class="p">)</span>
+    <span class="n">order_min</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">FIRE_ORDER_NUMBERS</span><span class="o">.</span><span class="n">min</span><span class="p">())</span>
+    <span class="n">order_max</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">FIRE_ORDER_NUMBERS</span><span class="o">.</span><span class="n">max</span><span class="p">())</span>
+
+    <span class="n">target_index</span> <span class="o">=</span> <span class="n">_target_order_index</span><span class="p">(</span><span class="n">params</span><span class="p">)</span>
+    <span class="n">previous_table</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"wavelengths"</span><span class="p">)</span>
+    <span class="n">previous_soln</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"wave_soln"</span><span class="p">)</span>
+    <span class="n">regen</span> <span class="o">=</span> <span class="n">target_index</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">previous_soln</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+
+    <span class="n">wave_soln</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">full</span><span class="p">((</span><span class="n">nspec</span><span class="p">,</span> <span class="n">FIRE_NORDERS</span><span class="p">),</span> <span class="n">np</span><span class="o">.</span><span class="n">nan</span><span class="p">)</span>
+    <span class="n">wave_coeffs</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">full</span><span class="p">((</span><span class="n">FIRE_NORDERS</span><span class="p">,</span> <span class="n">ncoeff</span><span class="p">),</span> <span class="n">np</span><span class="o">.</span><span class="n">nan</span><span class="p">)</span>
+    <span class="n">table</span> <span class="o">=</span> <span class="n">_blank_wavelength_table</span><span class="p">()</span>
+    <span class="n">records</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">float</span><span class="p">,</span> <span class="nb">float</span><span class="p">]]</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="n">rows</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="n">nspec</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">masked_orders</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
+
+    <span class="k">if</span> <span class="n">regen</span><span class="p">:</span>
+        <span class="n">wave_soln</span><span class="p">[:]</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">previous_soln</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">previous_table</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">for</span> <span class="n">name</span> <span class="ow">in</span> <span class="n">WAVELENGTH_COLUMNS</span><span class="p">:</span>
+                <span class="n">table</span><span class="p">[</span><span class="n">name</span><span class="p">]</span> <span class="o">=</span> <span class="n">previous_table</span><span class="p">[</span><span class="n">name</span><span class="p">]</span>
+        <span class="k">if</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"wave_coeffs"</span><span class="p">)</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">wave_coeffs</span><span class="p">[:]</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">products</span><span class="p">[</span><span class="s2">"wave_coeffs"</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+        <span class="n">prior_surface</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"wave_surface"</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">prior_surface</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">prior</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">prior_surface</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)[:,</span> <span class="n">target_index</span><span class="p">]</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">prior</span> <span class="o">=</span> <span class="n">wave_soln</span><span class="p">[:,</span> <span class="n">target_index</span><span class="p">]</span>
+        <span class="n">solution</span> <span class="o">=</span> <span class="n">regularize_wavelength_solution</span><span class="p">(</span>
+            <span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">spectra</span><span class="p">[:,</span> <span class="n">target_index</span><span class="p">]),</span> <span class="n">spectra</span><span class="p">[:,</span> <span class="n">target_index</span><span class="p">],</span> <span class="mf">0.0</span><span class="p">),</span>
+            <span class="n">line_waves</span><span class="p">,</span>
+            <span class="n">prior</span><span class="p">,</span>
+            <span class="n">sigdetect</span><span class="o">=</span><span class="n">sigdetect</span><span class="p">,</span>
+            <span class="n">fwhm</span><span class="o">=</span><span class="n">fwhm</span><span class="p">,</span>
+            <span class="n">match_toler</span><span class="o">=</span><span class="nb">max</span><span class="p">(</span><span class="n">match_toler</span><span class="p">,</span> <span class="mf">3.0</span><span class="p">),</span>
+            <span class="n">ncoeff</span><span class="o">=</span><span class="n">ncoeff</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="n">wave_soln</span><span class="p">[:,</span> <span class="n">target_index</span><span class="p">]</span> <span class="o">=</span> <span class="n">solution</span><span class="o">.</span><span class="n">wave_soln</span>
+        <span class="n">coeff</span><span class="p">,</span> <span class="n">_</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">fit_wavelength_solution</span><span class="p">(</span>
+            <span class="n">rows</span><span class="p">,</span> <span class="n">solution</span><span class="o">.</span><span class="n">wave_soln</span><span class="p">,</span> <span class="n">ncoeff</span><span class="o">=</span><span class="n">ncoeff</span><span class="p">,</span> <span class="n">nspec</span><span class="o">=</span><span class="n">nspec</span>
+        <span class="p">)</span>
+        <span class="n">wave_coeffs</span><span class="p">[</span><span class="n">target_index</span><span class="p">]</span> <span class="o">=</span> <span class="n">coeff</span>
+        <span class="n">_write_wavelength_row</span><span class="p">(</span><span class="n">table</span><span class="p">,</span> <span class="n">target_index</span><span class="p">,</span> <span class="n">solution</span><span class="p">)</span>
+        <span class="n">records</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span>
+            <span class="p">(</span><span class="nb">int</span><span class="p">(</span><span class="n">FIRE_ORDER_NUMBERS</span><span class="p">[</span><span class="n">target_index</span><span class="p">]),</span> <span class="nb">float</span><span class="p">(</span><span class="n">p</span><span class="p">),</span> <span class="nb">float</span><span class="p">(</span><span class="n">w</span><span class="p">))</span>
+            <span class="k">for</span> <span class="n">p</span><span class="p">,</span> <span class="n">w</span> <span class="ow">in</span> <span class="nb">zip</span><span class="p">(</span><span class="n">solution</span><span class="o">.</span><span class="n">pixel_fit</span><span class="p">,</span> <span class="n">solution</span><span class="o">.</span><span class="n">wave_fit</span><span class="p">)</span>
+        <span class="p">)</span>
+        <span class="n">wave_surface</span> <span class="o">=</span> <span class="n">prior_surface</span>
+        <span class="n">stored_coeffs</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"wave_surface_coeffs"</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">stored_coeffs</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">wave_surface_coeffs</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">full</span><span class="p">(</span><span class="n">nspec_coeff</span> <span class="o">*</span> <span class="n">norder_coeff</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">nan</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">wave_surface_coeffs</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">stored_coeffs</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">matched_pixel</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="n">matched_wave</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="n">matched_order</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">for</span> <span class="n">index</span><span class="p">,</span> <span class="n">order</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">FIRE_ORDER_NUMBERS</span><span class="p">):</span>
+            <span class="n">order</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">order</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">order</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">template_spectra</span> <span class="ow">or</span> <span class="ow">not</span> <span class="n">np</span><span class="o">.</span><span class="n">all</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">spectra</span><span class="p">[:,</span> <span class="n">index</span><span class="p">])):</span>
+                <span class="n">table</span><span class="p">[</span><span class="s2">"masked"</span><span class="p">][</span><span class="n">index</span><span class="p">]</span> <span class="o">=</span> <span class="kc">True</span>
+                <span class="n">masked_orders</span><span class="p">[</span><span class="n">order</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"no arc spectrum"</span>
+                <span class="k">continue</span>
+            <span class="n">arxiv_wave</span><span class="p">,</span> <span class="n">arxiv_flux</span> <span class="o">=</span> <span class="n">template_spectra</span><span class="p">[</span><span class="n">order</span><span class="p">]</span>
+            <span class="n">solution</span> <span class="o">=</span> <span class="n">reidentify_spectrum</span><span class="p">(</span>
+                <span class="n">spectra</span><span class="p">[:,</span> <span class="n">index</span><span class="p">],</span>
+                <span class="n">arxiv_flux</span><span class="p">,</span>
+                <span class="n">arxiv_wave</span><span class="p">,</span>
+                <span class="n">line_waves</span><span class="p">,</span>
+                <span class="n">sigdetect</span><span class="o">=</span><span class="n">sigdetect</span><span class="p">,</span>
+                <span class="n">fwhm</span><span class="o">=</span><span class="n">fwhm</span><span class="p">,</span>
+                <span class="n">match_toler</span><span class="o">=</span><span class="n">match_toler</span><span class="p">,</span>
+                <span class="n">n_first</span><span class="o">=</span><span class="n">n_first</span><span class="p">,</span>
+                <span class="n">n_final</span><span class="o">=</span><span class="n">n_final</span><span class="p">,</span>
+            <span class="p">)</span>
+            <span class="k">if</span> <span class="n">solution</span><span class="o">.</span><span class="n">masked</span><span class="p">:</span>
+                <span class="n">table</span><span class="p">[</span><span class="s2">"masked"</span><span class="p">][</span><span class="n">index</span><span class="p">]</span> <span class="o">=</span> <span class="kc">True</span>
+                <span class="n">masked_orders</span><span class="p">[</span><span class="n">order</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"insufficient line identifications"</span>
+                <span class="k">continue</span>
+            <span class="n">wave_soln</span><span class="p">[:,</span> <span class="n">index</span><span class="p">]</span> <span class="o">=</span> <span class="n">solution</span><span class="o">.</span><span class="n">wave_soln</span>
+            <span class="n">coeff</span><span class="p">,</span> <span class="n">_</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">fit_wavelength_solution</span><span class="p">(</span>
+                <span class="n">rows</span><span class="p">,</span> <span class="n">solution</span><span class="o">.</span><span class="n">wave_soln</span><span class="p">,</span> <span class="n">ncoeff</span><span class="o">=</span><span class="n">ncoeff</span><span class="p">,</span> <span class="n">nspec</span><span class="o">=</span><span class="n">nspec</span>
+            <span class="p">)</span>
+            <span class="n">wave_coeffs</span><span class="p">[</span><span class="n">index</span><span class="p">]</span> <span class="o">=</span> <span class="n">coeff</span>
+            <span class="n">_write_wavelength_row</span><span class="p">(</span><span class="n">table</span><span class="p">,</span> <span class="n">index</span><span class="p">,</span> <span class="n">solution</span><span class="p">)</span>
+            <span class="n">records</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span>
+                <span class="p">(</span><span class="n">order</span><span class="p">,</span> <span class="nb">float</span><span class="p">(</span><span class="n">p</span><span class="p">),</span> <span class="nb">float</span><span class="p">(</span><span class="n">w</span><span class="p">))</span>
+                <span class="k">for</span> <span class="n">p</span><span class="p">,</span> <span class="n">w</span> <span class="ow">in</span> <span class="nb">zip</span><span class="p">(</span><span class="n">solution</span><span class="o">.</span><span class="n">pixel_fit</span><span class="p">,</span> <span class="n">solution</span><span class="o">.</span><span class="n">wave_fit</span><span class="p">)</span>
+            <span class="p">)</span>
+            <span class="n">matched_pixel</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span><span class="n">solution</span><span class="o">.</span><span class="n">pixel_fit</span><span class="o">.</span><span class="n">tolist</span><span class="p">())</span>
+            <span class="n">matched_wave</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span><span class="n">solution</span><span class="o">.</span><span class="n">wave_fit</span><span class="o">.</span><span class="n">tolist</span><span class="p">())</span>
+            <span class="n">matched_order</span><span class="o">.</span><span class="n">extend</span><span class="p">([</span><span class="n">order</span><span class="p">]</span> <span class="o">*</span> <span class="n">solution</span><span class="o">.</span><span class="n">pixel_fit</span><span class="o">.</span><span class="n">size</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">matched_pixel</span><span class="p">)</span> <span class="o">&gt;=</span> <span class="n">nspec_coeff</span> <span class="o">*</span> <span class="n">norder_coeff</span><span class="p">:</span>
+            <span class="n">fit</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">fit_wavelength_surface</span><span class="p">(</span>
+                <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">matched_pixel</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">),</span>
+                <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">matched_wave</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">),</span>
+                <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">matched_order</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">),</span>
+                <span class="n">nspec</span><span class="o">=</span><span class="n">nspec</span><span class="p">,</span>
+                <span class="n">order_min</span><span class="o">=</span><span class="n">order_min</span><span class="p">,</span>
+                <span class="n">order_max</span><span class="o">=</span><span class="n">order_max</span><span class="p">,</span>
+                <span class="n">nspec_coeff</span><span class="o">=</span><span class="n">nspec_coeff</span><span class="p">,</span>
+                <span class="n">norder_coeff</span><span class="o">=</span><span class="n">norder_coeff</span><span class="p">,</span>
+            <span class="p">)</span>
+            <span class="n">wave_surface_coeffs</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">fit</span><span class="o">.</span><span class="n">coeffs</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+            <span class="n">wave_surface</span> <span class="o">=</span> <span class="n">_evaluate_wavelength_surface</span><span class="p">(</span>
+                <span class="n">fit</span><span class="p">,</span> <span class="n">nspec</span><span class="p">,</span> <span class="n">order_min</span><span class="p">,</span> <span class="n">order_max</span>
+            <span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">wave_surface_coeffs</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">full</span><span class="p">(</span><span class="n">nspec_coeff</span> <span class="o">*</span> <span class="n">norder_coeff</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">nan</span><span class="p">)</span>
+            <span class="n">wave_surface</span> <span class="o">=</span> <span class="n">wave_soln</span><span class="o">.</span><span class="n">copy</span><span class="p">()</span>
+
+    <span class="n">line_ids</span> <span class="o">=</span> <span class="n">Table</span><span class="p">(</span>
+        <span class="p">{</span>
+            <span class="s2">"order"</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">([</span><span class="n">r</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="k">for</span> <span class="n">r</span> <span class="ow">in</span> <span class="n">records</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">int16</span><span class="p">),</span>
+            <span class="s2">"pixel"</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">([</span><span class="n">r</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="k">for</span> <span class="n">r</span> <span class="ow">in</span> <span class="n">records</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float64</span><span class="p">),</span>
+            <span class="s2">"wave"</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">([</span><span class="n">r</span><span class="p">[</span><span class="mi">2</span><span class="p">]</span> <span class="k">for</span> <span class="n">r</span> <span class="ow">in</span> <span class="n">records</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float64</span><span class="p">),</span>
+        <span class="p">},</span>
+        <span class="n">names</span><span class="o">=</span><span class="p">(</span><span class="s2">"order"</span><span class="p">,</span> <span class="s2">"pixel"</span><span class="p">,</span> <span class="s2">"wave"</span><span class="p">),</span>
+    <span class="p">)</span>
+    <span class="k">if</span> <span class="n">wave_surface</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">wave_surface</span> <span class="o">=</span> <span class="n">wave_soln</span><span class="o">.</span><span class="n">copy</span><span class="p">()</span>
+
+    <span class="n">residuals</span> <span class="o">=</span> <span class="n">_wavelength_residual_figure</span><span class="p">(</span><span class="n">table</span><span class="p">,</span> <span class="n">wave_soln</span><span class="p">,</span> <span class="n">line_ids</span><span class="p">)</span>
+    <span class="n">identifications</span> <span class="o">=</span> <span class="n">_wavelength_identification_figure</span><span class="p">(</span>
+        <span class="n">spectra</span><span class="p">,</span> <span class="n">table</span><span class="p">,</span> <span class="n">line_ids</span><span class="p">,</span> <span class="n">wave_soln</span>
+    <span class="p">)</span>
+
+    <span class="n">n_masked</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">table</span><span class="p">[</span><span class="s2">"masked"</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">bool</span><span class="p">)</span><span class="o">.</span><span class="n">sum</span><span class="p">())</span>
+    <span class="k">return</span> <span class="n">StepResult</span><span class="p">(</span>
+        <span class="n">products</span><span class="o">=</span><span class="p">{</span>
+            <span class="s2">"arc_image"</span><span class="p">:</span> <span class="n">arcimg</span><span class="p">,</span>
+            <span class="s2">"arc_spectra"</span><span class="p">:</span> <span class="n">spectra</span><span class="p">,</span>
+            <span class="s2">"order_centers"</span><span class="p">:</span> <span class="n">centers</span><span class="p">,</span>
+            <span class="s2">"order_halfwidths"</span><span class="p">:</span> <span class="n">widths</span><span class="p">,</span>
+            <span class="s2">"wavelengths"</span><span class="p">:</span> <span class="n">table</span><span class="p">,</span>
+            <span class="s2">"wave_soln"</span><span class="p">:</span> <span class="n">wave_soln</span><span class="p">,</span>
+            <span class="s2">"wave_coeffs"</span><span class="p">:</span> <span class="n">wave_coeffs</span><span class="p">,</span>
+            <span class="s2">"wave_surface"</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">wave_surface</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">),</span>
+            <span class="s2">"wave_surface_coeffs"</span><span class="p">:</span> <span class="n">wave_surface_coeffs</span><span class="p">,</span>
+            <span class="s2">"line_ids"</span><span class="p">:</span> <span class="n">line_ids</span><span class="p">,</span>
+        <span class="p">},</span>
+        <span class="n">meta</span><span class="o">=</span><span class="p">{</span>
+            <span class="s2">"n_orders_calibrated"</span><span class="p">:</span> <span class="nb">int</span><span class="p">(</span><span class="n">FIRE_NORDERS</span> <span class="o">-</span> <span class="n">n_masked</span><span class="p">),</span>
+            <span class="s2">"n_orders_masked"</span><span class="p">:</span> <span class="n">n_masked</span><span class="p">,</span>
+            <span class="s2">"n_lines"</span><span class="p">:</span> <span class="nb">int</span><span class="p">(</span><span class="n">line_ids</span><span class="p">[</span><span class="s2">"order"</span><span class="p">]</span><span class="o">.</span><span class="n">size</span><span class="p">),</span>
+            <span class="s2">"wave_surface_nspec_coeff"</span><span class="p">:</span> <span class="n">nspec_coeff</span><span class="p">,</span>
+            <span class="s2">"wave_surface_norder_coeff"</span><span class="p">:</span> <span class="n">norder_coeff</span><span class="p">,</span>
+            <span class="s2">"wave_order_min"</span><span class="p">:</span> <span class="n">order_min</span><span class="p">,</span>
+            <span class="s2">"wave_order_max"</span><span class="p">:</span> <span class="n">order_max</span><span class="p">,</span>
+        <span class="p">},</span>
+        <span class="n">plots</span><span class="o">=</span><span class="p">{</span>
+            <span class="s2">"wavelength_residuals"</span><span class="p">:</span> <span class="n">residuals</span><span class="p">,</span>
+            <span class="s2">"wavelength_identifications"</span><span class="p">:</span> <span class="n">identifications</span><span class="p">,</span>
+        <span class="p">},</span>
+        <span class="n">masked_orders</span><span class="o">=</span><span class="n">masked_orders</span><span class="p">,</span>
+    <span class="p">)</span>
+</pre></div>
+</div>
+<p>The pure algorithms in <code>onfire/core/wavelengths.py</code>:</p>
+<div class="code-ref"><div class="code-label">onfire/core/wavelengths.py:148</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">detect_lines</span><span class="p">(</span>
+    <span class="n">spec</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">sigdetect</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">5.0</span><span class="p">,</span>
+    <span class="n">fwhm</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">4.0</span><span class="p">,</span>
+    <span class="n">cont_frac_fwhm</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1.0</span><span class="p">,</span>
+    <span class="n">fit_frac_fwhm</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1.25</span><span class="p">,</span>
+    <span class="n">cont_samp</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">30.0</span><span class="p">,</span>
+    <span class="n">niter_cont</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">3</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">DetectedLines</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Detect emission lines in a 1D arc spectrum.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        spec: The 1D arc spectrum.</span>
+<span class="sd">        sigdetect: Detection threshold in units of the local noise.</span>
+<span class="sd">        fwhm: Expected line FWHM in pixels, used for centroid windows and the</span>
+<span class="sd">            minimum line separation.</span>
+<span class="sd">        cont_frac_fwhm: Continuum sampling scale.</span>
+<span class="sd">        fit_frac_fwhm: Centroid half-window, in units of ``fwhm``.</span>
+<span class="sd">        cont_samp: Continuum sampling scale passed to :func:`iter_continuum`.</span>
+<span class="sd">        niter_cont: Continuum rejection iterations.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        A :class:`DetectedLines` describing the detections.</span>
+<span class="sd">    """</span>
+    <span class="n">spec</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">spec</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">cont</span> <span class="o">=</span> <span class="n">iter_continuum</span><span class="p">(</span>
+        <span class="n">spec</span><span class="p">,</span> <span class="n">fwhm</span><span class="o">=</span><span class="n">fwhm</span><span class="p">,</span> <span class="n">cont_samp</span><span class="o">=</span><span class="n">cont_samp</span> <span class="o">*</span> <span class="n">cont_frac_fwhm</span><span class="p">,</span> <span class="n">niter_cont</span><span class="o">=</span><span class="n">niter_cont</span>
+    <span class="p">)</span>
+    <span class="n">cont_sub</span> <span class="o">=</span> <span class="n">spec</span> <span class="o">-</span> <span class="n">cont</span>
+    <span class="n">scatter</span> <span class="o">=</span> <span class="mf">1.4826</span> <span class="o">*</span> <span class="n">np</span><span class="o">.</span><span class="n">median</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">abs</span><span class="p">(</span><span class="n">cont_sub</span> <span class="o">-</span> <span class="n">np</span><span class="o">.</span><span class="n">median</span><span class="p">(</span><span class="n">cont_sub</span><span class="p">)))</span>
+    <span class="k">if</span> <span class="n">scatter</span> <span class="o">&lt;=</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="n">scatter</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">std</span><span class="p">(</span><span class="n">cont_sub</span><span class="p">))</span> <span class="ow">or</span> <span class="mf">1.0</span>
+
+    <span class="n">threshold</span> <span class="o">=</span> <span class="n">sigdetect</span> <span class="o">*</span> <span class="n">scatter</span>
+    <span class="n">candidates</span> <span class="o">=</span> <span class="n">_local_maxima</span><span class="p">(</span><span class="n">cont_sub</span><span class="p">)</span>
+    <span class="n">candidates</span> <span class="o">=</span> <span class="n">candidates</span><span class="p">[</span><span class="n">cont_sub</span><span class="p">[</span><span class="n">candidates</span><span class="p">]</span> <span class="o">&gt;</span> <span class="n">threshold</span><span class="p">]</span>
+    <span class="n">peaks</span> <span class="o">=</span> <span class="n">_select_peaks</span><span class="p">(</span><span class="n">cont_sub</span><span class="p">,</span> <span class="n">candidates</span><span class="p">,</span> <span class="n">min_sep</span><span class="o">=</span><span class="nb">max</span><span class="p">(</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">fwhm</span><span class="p">))</span>
+
+    <span class="n">half</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="nb">int</span><span class="p">(</span><span class="nb">round</span><span class="p">(</span><span class="n">fit_frac_fwhm</span> <span class="o">*</span> <span class="n">fwhm</span><span class="p">)))</span>
+    <span class="n">nspec</span> <span class="o">=</span> <span class="n">cont_sub</span><span class="o">.</span><span class="n">size</span>
+    <span class="n">tcent</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">peaks</span><span class="o">.</span><span class="n">size</span><span class="p">)</span>
+    <span class="n">tampl</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">peaks</span><span class="o">.</span><span class="n">size</span><span class="p">)</span>
+    <span class="n">twid</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">peaks</span><span class="o">.</span><span class="n">size</span><span class="p">)</span>
+    <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="n">peak</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">peaks</span><span class="p">):</span>
+        <span class="n">lo</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">peak</span> <span class="o">-</span> <span class="n">half</span><span class="p">)</span>
+        <span class="n">hi</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="n">nspec</span><span class="p">,</span> <span class="n">peak</span> <span class="o">+</span> <span class="n">half</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span>
+        <span class="n">segment</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">clip</span><span class="p">(</span><span class="n">cont_sub</span><span class="p">[</span><span class="n">lo</span><span class="p">:</span><span class="n">hi</span><span class="p">],</span> <span class="mf">0.0</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+        <span class="n">total</span> <span class="o">=</span> <span class="n">segment</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span>
+        <span class="n">columns</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="n">lo</span><span class="p">,</span> <span class="n">hi</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">total</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="n">centroid</span> <span class="o">=</span> <span class="nb">float</span><span class="p">((</span><span class="n">columns</span> <span class="o">*</span> <span class="n">segment</span><span class="p">)</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span> <span class="o">/</span> <span class="n">total</span><span class="p">)</span>
+            <span class="n">width</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">sqrt</span><span class="p">((</span><span class="n">segment</span> <span class="o">*</span> <span class="p">(</span><span class="n">columns</span> <span class="o">-</span> <span class="n">centroid</span><span class="p">)</span> <span class="o">**</span> <span class="mi">2</span><span class="p">)</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span> <span class="o">/</span> <span class="n">total</span><span class="p">))</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">centroid</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">peak</span><span class="p">)</span>
+            <span class="n">width</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">fwhm</span><span class="p">)</span>
+        <span class="n">tcent</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">=</span> <span class="n">centroid</span>
+        <span class="n">twid</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="n">width</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">)</span>
+        <span class="n">tampl</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">interp</span><span class="p">(</span><span class="n">centroid</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="n">nspec</span><span class="p">),</span> <span class="n">cont_sub</span><span class="p">))</span>
+
+    <span class="n">nsig</span> <span class="o">=</span> <span class="n">tampl</span> <span class="o">/</span> <span class="n">scatter</span>
+    <span class="n">good</span> <span class="o">=</span> <span class="n">nsig</span> <span class="o">&gt;=</span> <span class="n">sigdetect</span>
+    <span class="k">return</span> <span class="n">DetectedLines</span><span class="p">(</span>
+        <span class="n">tcent</span><span class="o">=</span><span class="n">tcent</span><span class="p">[</span><span class="n">good</span><span class="p">],</span>
+        <span class="n">tampl</span><span class="o">=</span><span class="n">tampl</span><span class="p">[</span><span class="n">good</span><span class="p">],</span>
+        <span class="n">twid</span><span class="o">=</span><span class="n">twid</span><span class="p">[</span><span class="n">good</span><span class="p">],</span>
+        <span class="n">nsig</span><span class="o">=</span><span class="n">nsig</span><span class="p">[</span><span class="n">good</span><span class="p">],</span>
+        <span class="n">cont_sub</span><span class="o">=</span><span class="n">cont_sub</span><span class="p">,</span>
+        <span class="n">good</span><span class="o">=</span><span class="n">good</span><span class="p">,</span>
+    <span class="p">)</span>
+</pre></div>
+</div>
+<div class="code-ref"><div class="code-label">onfire/core/wavelengths.py:228</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">xcorr_shift</span><span class="p">(</span>
+    <span class="n">spec</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">template</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">max_lag_frac</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1.0</span><span class="p">,</span>
+    <span class="n">percent_ceil</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">50.0</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">float</span><span class="p">,</span> <span class="nb">float</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""Cross-correlate an observed spectrum against a template.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        spec: Observed arc spectrum.</span>
+<span class="sd">        template: Template arc spectrum on the same pixel grid.</span>
+<span class="sd">        max_lag_frac: Maximum lag to search, as a fraction of the spectrum</span>
+<span class="sd">            length.</span>
+<span class="sd">        percent_ceil: Upper percentile used to suppress the strongest lines</span>
+<span class="sd">            before correlating.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        ``(shift, corr)`` where ``shift`` is the pixel shift such that</span>
+<span class="sd">        ``template_pixel = observed_pixel - shift`` and ``corr`` is the</span>
+<span class="sd">        normalized peak correlation.</span>
+<span class="sd">    """</span>
+    <span class="n">spec</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">spec</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">template</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">template</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">n</span> <span class="o">=</span> <span class="n">spec</span><span class="o">.</span><span class="n">size</span>
+    <span class="k">if</span> <span class="n">template</span><span class="o">.</span><span class="n">size</span> <span class="o">!=</span> <span class="n">n</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">"spec and template must have the same length"</span><span class="p">)</span>
+    <span class="n">a</span> <span class="o">=</span> <span class="n">_prep_xcorr</span><span class="p">(</span><span class="n">spec</span><span class="p">,</span> <span class="n">percent_ceil</span><span class="p">)</span>
+    <span class="n">b</span> <span class="o">=</span> <span class="n">_prep_xcorr</span><span class="p">(</span><span class="n">template</span><span class="p">,</span> <span class="n">percent_ceil</span><span class="p">)</span>
+    <span class="n">corr</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">fft</span><span class="o">.</span><span class="n">irfft</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">fft</span><span class="o">.</span><span class="n">rfft</span><span class="p">(</span><span class="n">a</span><span class="p">)</span> <span class="o">*</span> <span class="n">np</span><span class="o">.</span><span class="n">conj</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">fft</span><span class="o">.</span><span class="n">rfft</span><span class="p">(</span><span class="n">b</span><span class="p">)),</span> <span class="n">n</span><span class="p">)</span>
+    <span class="n">lags</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="n">n</span><span class="p">)</span>
+    <span class="n">lags</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">lags</span> <span class="o">&gt;</span> <span class="n">n</span> <span class="o">//</span> <span class="mi">2</span><span class="p">,</span> <span class="n">lags</span> <span class="o">-</span> <span class="n">n</span><span class="p">,</span> <span class="n">lags</span><span class="p">)</span>
+    <span class="n">max_lag</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">max_lag_frac</span> <span class="o">*</span> <span class="n">n</span><span class="p">)</span>
+    <span class="n">allowed</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">abs</span><span class="p">(</span><span class="n">lags</span><span class="p">)</span> <span class="o">&lt;=</span> <span class="n">max_lag</span>
+    <span class="n">masked</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">allowed</span><span class="p">,</span> <span class="n">corr</span><span class="p">,</span> <span class="o">-</span><span class="n">np</span><span class="o">.</span><span class="n">inf</span><span class="p">)</span>
+    <span class="n">best</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">argmax</span><span class="p">(</span><span class="n">masked</span><span class="p">))</span>
+    <span class="n">peak_lag</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">lags</span><span class="p">[</span><span class="n">best</span><span class="p">])</span>
+    <span class="n">denom</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">sqrt</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">a</span><span class="o">**</span><span class="mi">2</span><span class="p">)</span> <span class="o">*</span> <span class="n">np</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">b</span><span class="o">**</span><span class="mi">2</span><span class="p">))</span>
+    <span class="n">peak_corr</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">corr</span><span class="p">[</span><span class="n">best</span><span class="p">]</span> <span class="o">/</span> <span class="n">denom</span><span class="p">)</span> <span class="k">if</span> <span class="n">denom</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="k">else</span> <span class="mf">0.0</span>
+    <span class="k">return</span> <span class="nb">float</span><span class="p">(</span><span class="n">peak_lag</span><span class="p">),</span> <span class="n">peak_corr</span>
+</pre></div>
+</div>
+<div class="code-ref"><div class="code-label">onfire/core/wavelengths.py:391</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">reidentify_spectrum</span><span class="p">(</span>
+    <span class="n">spec</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">arxiv_flux</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">arxiv_wave</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">line_waves</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">sigdetect</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">5.0</span><span class="p">,</span>
+    <span class="n">fwhm</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">4.0</span><span class="p">,</span>
+    <span class="n">match_toler</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">2.0</span><span class="p">,</span>
+    <span class="n">n_first</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">2</span><span class="p">,</span>
+    <span class="n">n_final</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">4</span><span class="p">,</span>
+    <span class="n">sigrej</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">3.0</span><span class="p">,</span>
+    <span class="n">niter</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">6</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">WavelengthSolution</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Determine a 1D wavelength solution by reidentifying the archive.</span>
+
+<span class="sd">    The observed spectrum is cross-correlated with the bundled archive arc</span>
+<span class="sd">    spectrum to obtain a pixel shift, each detected line is matched to the</span>
+<span class="sd">    closest rest wavelength in the line list, and a Legendre solution is fit</span>
+<span class="sd">    iteratively while new line matches are added.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        spec: Extracted arc spectrum for one order.</span>
+<span class="sd">        arxiv_flux: Archived composite arc spectrum (2040 pixels).</span>
+<span class="sd">        arxiv_wave: Archived wavelength solution on the archive pixel grid.</span>
+<span class="sd">        line_waves: Rest wavelengths of the OH line list.</span>
+<span class="sd">        sigdetect: Line-detection threshold in noise sigma.</span>
+<span class="sd">        fwhm: Expected line FWHM in pixels.</span>
+<span class="sd">        match_toler: Wavelength-matching tolerance in pixels.</span>
+<span class="sd">        n_first: Polynomial order of the first-pass fit.</span>
+<span class="sd">        n_final: Polynomial order of the final fit.</span>
+<span class="sd">        sigrej: Rejection threshold in robust sigma.</span>
+<span class="sd">        niter: Maximum number of line-addition iterations.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        The fitted :class:`WavelengthSolution`.</span>
+<span class="sd">    """</span>
+    <span class="n">spec</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">spec</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">nspec</span> <span class="o">=</span> <span class="n">spec</span><span class="o">.</span><span class="n">size</span>
+    <span class="n">line_waves</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">sort</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">line_waves</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">))</span>
+    <span class="n">arxiv_flux_rs</span> <span class="o">=</span> <span class="n">_resample</span><span class="p">(</span><span class="n">arxiv_flux</span><span class="p">,</span> <span class="n">nspec</span><span class="p">)</span>
+    <span class="n">arxiv_wave_rs</span> <span class="o">=</span> <span class="n">_resample</span><span class="p">(</span><span class="n">arxiv_wave</span><span class="p">,</span> <span class="n">nspec</span><span class="p">)</span>
+    <span class="n">dispersion</span> <span class="o">=</span> <span class="nb">abs</span><span class="p">(</span><span class="nb">float</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">median</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">diff</span><span class="p">(</span><span class="n">arxiv_wave_rs</span><span class="p">))))</span>
+    <span class="n">tolerance</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="n">match_toler</span> <span class="o">*</span> <span class="n">dispersion</span><span class="p">,</span> <span class="mf">1e-6</span><span class="p">)</span>
+
+    <span class="n">detected</span> <span class="o">=</span> <span class="n">detect_lines</span><span class="p">(</span><span class="n">spec</span><span class="p">,</span> <span class="n">sigdetect</span><span class="o">=</span><span class="n">sigdetect</span><span class="p">,</span> <span class="n">fwhm</span><span class="o">=</span><span class="n">fwhm</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">detected</span><span class="o">.</span><span class="n">tcent</span><span class="o">.</span><span class="n">size</span> <span class="o">&lt;</span> <span class="mi">3</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">_masked_solution</span><span class="p">(</span><span class="n">nspec</span><span class="p">,</span> <span class="n">ncoeff</span><span class="o">=</span><span class="n">n_first</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span>
+
+    <span class="n">shift</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">xcorr_shift</span><span class="p">(</span><span class="n">spec</span><span class="p">,</span> <span class="n">arxiv_flux_rs</span><span class="p">)</span>
+    <span class="n">template_pixels</span> <span class="o">=</span> <span class="n">detected</span><span class="o">.</span><span class="n">tcent</span> <span class="o">-</span> <span class="n">shift</span>
+    <span class="n">wave_guess</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">interp</span><span class="p">(</span><span class="n">template_pixels</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="n">nspec</span><span class="p">),</span> <span class="n">arxiv_wave_rs</span><span class="p">)</span>
+    <span class="n">pixel_fit</span><span class="p">,</span> <span class="n">wave_fit</span> <span class="o">=</span> <span class="n">_match_to_line_list</span><span class="p">(</span>
+        <span class="n">detected</span><span class="o">.</span><span class="n">tcent</span><span class="p">,</span> <span class="n">wave_guess</span><span class="p">,</span> <span class="n">line_waves</span><span class="p">,</span> <span class="n">tolerance</span>
+    <span class="p">)</span>
+
+    <span class="k">if</span> <span class="n">pixel_fit</span><span class="o">.</span><span class="n">size</span> <span class="o">&lt;</span> <span class="mi">3</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">_masked_solution</span><span class="p">(</span><span class="n">nspec</span><span class="p">,</span> <span class="n">ncoeff</span><span class="o">=</span><span class="n">n_first</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span>
+
+    <span class="n">solution</span> <span class="o">=</span> <span class="n">_solution_from_pixels</span><span class="p">(</span>
+        <span class="n">pixel_fit</span><span class="p">,</span> <span class="n">wave_fit</span><span class="p">,</span> <span class="n">nspec</span><span class="p">,</span> <span class="n">ncoeff</span><span class="o">=</span><span class="n">n_first</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">sigrej</span><span class="o">=</span><span class="n">sigrej</span>
+    <span class="p">)</span>
+    <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">niter</span><span class="p">)):</span>
+        <span class="n">predicted</span> <span class="o">=</span> <span class="n">evaluate_wavelength_solution</span><span class="p">(</span>
+            <span class="n">solution</span><span class="o">.</span><span class="n">coeff</span><span class="p">,</span> <span class="n">solution</span><span class="o">.</span><span class="n">xmid</span><span class="p">,</span> <span class="n">solution</span><span class="o">.</span><span class="n">xscale</span><span class="p">,</span> <span class="n">detected</span><span class="o">.</span><span class="n">tcent</span>
+        <span class="p">)</span>
+        <span class="n">extra_pixel</span><span class="p">,</span> <span class="n">extra_wave</span> <span class="o">=</span> <span class="n">_match_to_line_list</span><span class="p">(</span>
+            <span class="n">detected</span><span class="o">.</span><span class="n">tcent</span><span class="p">,</span> <span class="n">predicted</span><span class="p">,</span> <span class="n">line_waves</span><span class="p">,</span> <span class="n">tolerance</span>
+        <span class="p">)</span>
+        <span class="n">merged_pixel</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">concatenate</span><span class="p">([</span><span class="n">pixel_fit</span><span class="p">,</span> <span class="n">extra_pixel</span><span class="p">])</span>
+        <span class="n">merged_wave</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">concatenate</span><span class="p">([</span><span class="n">wave_fit</span><span class="p">,</span> <span class="n">extra_wave</span><span class="p">])</span>
+        <span class="n">unique</span><span class="p">,</span> <span class="n">indices</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">unique</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">round</span><span class="p">(</span><span class="n">merged_pixel</span><span class="p">,</span> <span class="mi">4</span><span class="p">),</span> <span class="n">return_index</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+        <span class="n">merged_pixel</span> <span class="o">=</span> <span class="n">unique</span>
+        <span class="n">merged_wave</span> <span class="o">=</span> <span class="n">merged_wave</span><span class="p">[</span><span class="n">indices</span><span class="p">]</span>
+        <span class="n">ncoeff</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="n">n_final</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="nb">max</span><span class="p">(</span><span class="n">n_first</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">solution</span><span class="o">.</span><span class="n">coeff</span><span class="o">.</span><span class="n">size</span> <span class="o">+</span> <span class="mi">1</span><span class="p">))</span>
+        <span class="n">updated</span> <span class="o">=</span> <span class="n">_solution_from_pixels</span><span class="p">(</span>
+            <span class="n">merged_pixel</span><span class="p">,</span> <span class="n">merged_wave</span><span class="p">,</span> <span class="n">nspec</span><span class="p">,</span> <span class="n">ncoeff</span><span class="o">=</span><span class="n">ncoeff</span><span class="p">,</span> <span class="n">sigrej</span><span class="o">=</span><span class="n">sigrej</span>
+        <span class="p">)</span>
+        <span class="k">if</span> <span class="n">updated</span><span class="o">.</span><span class="n">nlines</span> <span class="o">&lt;=</span> <span class="n">solution</span><span class="o">.</span><span class="n">nlines</span> <span class="ow">and</span> <span class="n">ncoeff</span> <span class="o">==</span> <span class="n">solution</span><span class="o">.</span><span class="n">coeff</span><span class="o">.</span><span class="n">size</span><span class="p">:</span>
+            <span class="n">solution</span> <span class="o">=</span> <span class="n">updated</span>
+            <span class="k">break</span>
+        <span class="n">solution</span> <span class="o">=</span> <span class="n">updated</span>
+    <span class="k">return</span> <span class="n">solution</span>
+</pre></div>
+</div>
+<div class="code-ref"><div class="code-label">onfire/core/wavelengths.py:493</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">regularize_wavelength_solution</span><span class="p">(</span>
+    <span class="n">spec</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">line_waves</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">prior_wave</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">sigdetect</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">5.0</span><span class="p">,</span>
+    <span class="n">fwhm</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">4.0</span><span class="p">,</span>
+    <span class="n">match_toler</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">3.0</span><span class="p">,</span>
+    <span class="n">ncoeff</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">5</span><span class="p">,</span>
+    <span class="n">correction_order</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span>
+    <span class="n">sigrej</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">3.0</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">WavelengthSolution</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Refine one order using cross-order regularization from a global prior.</span>
+
+<span class="sd">    The global solution ``prior_wave`` provides predicted wavelengths at every</span>
+<span class="sd">    pixel. Newly detected lines are matched to the line list and a smooth,</span>
+<span class="sd">    low-order correction to the global solution is fit. Orders with too few</span>
+<span class="sd">    matches fall back to the global prior, so faint orders inherit the</span>
+<span class="sd">    instrument solution instead of failing.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        spec: Extracted arc spectrum for the target order.</span>
+<span class="sd">        line_waves: Rest wavelengths of the OH line list.</span>
+<span class="sd">        prior_wave: Global wavelength solution evaluated at every pixel, shape</span>
+<span class="sd">            ``(nspec,)``.</span>
+<span class="sd">        sigdetect: Line-detection threshold in noise sigma.</span>
+<span class="sd">        fwhm: Expected line FWHM in pixels.</span>
+<span class="sd">        match_toler: Matching tolerance in pixels.</span>
+<span class="sd">        ncoeff: Number of coefficients of the stored 1D solution.</span>
+<span class="sd">        correction_order: Polynomial order of the smooth correction.</span>
+<span class="sd">        sigrej: Rejection threshold in robust sigma.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        The regularized :class:`WavelengthSolution`.</span>
+<span class="sd">    """</span>
+    <span class="n">spec</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">spec</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">prior_wave</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">prior_wave</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">nspec</span> <span class="o">=</span> <span class="n">spec</span><span class="o">.</span><span class="n">size</span>
+    <span class="n">rows</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="n">nspec</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">line_waves</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">sort</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">line_waves</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">))</span>
+    <span class="n">dispersion</span> <span class="o">=</span> <span class="nb">abs</span><span class="p">(</span><span class="nb">float</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">median</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">diff</span><span class="p">(</span><span class="n">prior_wave</span><span class="p">))))</span>
+    <span class="n">tolerance</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="n">match_toler</span> <span class="o">*</span> <span class="n">dispersion</span><span class="p">,</span> <span class="mf">1e-6</span><span class="p">)</span>
+
+    <span class="n">detected</span> <span class="o">=</span> <span class="n">detect_lines</span><span class="p">(</span><span class="n">spec</span><span class="p">,</span> <span class="n">sigdetect</span><span class="o">=</span><span class="n">sigdetect</span><span class="p">,</span> <span class="n">fwhm</span><span class="o">=</span><span class="n">fwhm</span><span class="p">)</span>
+    <span class="n">guess</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">interp</span><span class="p">(</span><span class="n">detected</span><span class="o">.</span><span class="n">tcent</span><span class="p">,</span> <span class="n">rows</span><span class="p">,</span> <span class="n">prior_wave</span><span class="p">)</span>
+    <span class="n">pixel_fit</span><span class="p">,</span> <span class="n">wave_fit</span> <span class="o">=</span> <span class="n">_match_to_line_list</span><span class="p">(</span>
+        <span class="n">detected</span><span class="o">.</span><span class="n">tcent</span><span class="p">,</span> <span class="n">guess</span><span class="p">,</span> <span class="n">line_waves</span><span class="p">,</span> <span class="n">tolerance</span>
+    <span class="p">)</span>
+
+    <span class="k">if</span> <span class="n">pixel_fit</span><span class="o">.</span><span class="n">size</span> <span class="o">&lt;</span> <span class="mi">3</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">_fallback_solution</span><span class="p">(</span><span class="n">prior_wave</span><span class="p">,</span> <span class="n">ncoeff</span><span class="o">=</span><span class="n">ncoeff</span><span class="p">)</span>
+
+    <span class="n">prior_at_lines</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">interp</span><span class="p">(</span><span class="n">pixel_fit</span><span class="p">,</span> <span class="n">rows</span><span class="p">,</span> <span class="n">prior_wave</span><span class="p">)</span>
+    <span class="n">residual</span> <span class="o">=</span> <span class="n">wave_fit</span> <span class="o">-</span> <span class="n">prior_at_lines</span>
+    <span class="n">fit</span><span class="p">,</span> <span class="n">_</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">robust_legendre_fit</span><span class="p">(</span>
+        <span class="p">[</span><span class="n">pixel_fit</span><span class="p">],</span>
+        <span class="n">residual</span><span class="p">,</span>
+        <span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">correction_order</span><span class="p">),),</span>
+        <span class="n">domains</span><span class="o">=</span><span class="p">[(</span><span class="mf">0.0</span><span class="p">,</span> <span class="nb">float</span><span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">nspec</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)))],</span>
+        <span class="n">sigrej</span><span class="o">=</span><span class="n">sigrej</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">correction</span> <span class="o">=</span> <span class="n">fit</span><span class="o">.</span><span class="n">evaluate</span><span class="p">([</span><span class="n">rows</span><span class="p">])</span>
+    <span class="n">wave_soln</span> <span class="o">=</span> <span class="n">prior_wave</span> <span class="o">+</span> <span class="n">correction</span>
+
+    <span class="n">coeff</span><span class="p">,</span> <span class="n">_</span><span class="p">,</span> <span class="n">rms</span> <span class="o">=</span> <span class="n">fit_wavelength_solution</span><span class="p">(</span>
+        <span class="n">rows</span><span class="p">,</span> <span class="n">wave_soln</span><span class="p">,</span> <span class="n">ncoeff</span><span class="o">=</span><span class="n">ncoeff</span><span class="p">,</span> <span class="n">nspec</span><span class="o">=</span><span class="n">nspec</span><span class="p">,</span> <span class="n">sigrej</span><span class="o">=</span><span class="n">sigrej</span>
+    <span class="p">)</span>
+    <span class="n">xmid</span><span class="p">,</span> <span class="n">xscale</span> <span class="o">=</span> <span class="n">trace_xcoord</span><span class="p">(</span><span class="n">nspec</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">WavelengthSolution</span><span class="p">(</span>
+        <span class="n">coeff</span><span class="o">=</span><span class="n">coeff</span><span class="p">,</span>
+        <span class="n">xmid</span><span class="o">=</span><span class="n">xmid</span><span class="p">,</span>
+        <span class="n">xscale</span><span class="o">=</span><span class="n">xscale</span><span class="p">,</span>
+        <span class="n">rms</span><span class="o">=</span><span class="n">rms</span><span class="p">,</span>
+        <span class="n">nlines</span><span class="o">=</span><span class="nb">int</span><span class="p">(</span><span class="n">pixel_fit</span><span class="o">.</span><span class="n">size</span><span class="p">),</span>
+        <span class="n">pixel_fit</span><span class="o">=</span><span class="n">pixel_fit</span><span class="p">,</span>
+        <span class="n">wave_fit</span><span class="o">=</span><span class="n">wave_fit</span><span class="p">,</span>
+        <span class="n">wave_soln</span><span class="o">=</span><span class="n">wave_soln</span><span class="p">,</span>
+        <span class="n">cen_wave</span><span class="o">=</span><span class="nb">float</span><span class="p">(</span><span class="n">wave_soln</span><span class="p">[</span><span class="n">nspec</span> <span class="o">//</span> <span class="mi">2</span><span class="p">]),</span>
+        <span class="n">cen_disp</span><span class="o">=</span><span class="nb">float</span><span class="p">(</span><span class="n">wave_soln</span><span class="p">[</span><span class="nb">min</span><span class="p">(</span><span class="n">nspec</span> <span class="o">-</span> <span class="mi">1</span><span class="p">,</span> <span class="n">nspec</span> <span class="o">//</span> <span class="mi">2</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)]</span> <span class="o">-</span> <span class="n">wave_soln</span><span class="p">[</span><span class="n">nspec</span> <span class="o">//</span> <span class="mi">2</span><span class="p">]),</span>
+        <span class="n">masked</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+    <span class="p">)</span>
+</pre></div>
+</div>
+<div class="code-ref"><div class="code-label">onfire/core/wavelengths.py:598</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">fit_wavelength_surface</span><span class="p">(</span>
+    <span class="n">pixel</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">wave</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">order</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">nspec</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="n">order_min</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="n">order_max</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="n">nspec_coeff</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">4</span><span class="p">,</span>
+    <span class="n">norder_coeff</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">6</span><span class="p">,</span>
+    <span class="n">sigrej</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">3.0</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">PolynomialFit</span><span class="p">,</span> <span class="nb">float</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""Fit the global 2D pixel-vs-order wavelength surface.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        pixel: Detector pixel positions of all identified lines.</span>
+<span class="sd">        wave: Assigned wavelengths.</span>
+<span class="sd">        order: Echelle order number of each line.</span>
+<span class="sd">        nspec: Number of detector pixels along dispersion.</span>
+<span class="sd">        order_min: Minimum echelle order number.</span>
+<span class="sd">        order_max: Maximum echelle order number.</span>
+<span class="sd">        nspec_coeff: Polynomial order along the pixel axis.</span>
+<span class="sd">        norder_coeff: Polynomial order along the order axis.</span>
+<span class="sd">        sigrej: Rejection threshold in robust sigma.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        ``(fit, rms)`` with the fitted surface (normalized pixel and order</span>
+<span class="sd">        coordinates in ``[0, 1]``) and its RMS residual in Angstrom.</span>
+<span class="sd">    """</span>
+    <span class="n">pixel</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">pixel</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">wave</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">wave</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">order</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">order</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">span</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">order_max</span> <span class="o">-</span> <span class="n">order_min</span><span class="p">))</span>
+    <span class="n">spec_coord</span> <span class="o">=</span> <span class="n">pixel</span> <span class="o">/</span> <span class="nb">float</span><span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">nspec</span> <span class="o">-</span> <span class="mi">1</span><span class="p">))</span>
+    <span class="n">order_coord</span> <span class="o">=</span> <span class="p">(</span><span class="n">order</span> <span class="o">-</span> <span class="n">order_min</span><span class="p">)</span> <span class="o">/</span> <span class="n">span</span>
+    <span class="n">fit</span><span class="p">,</span> <span class="n">_</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">robust_legendre_fit</span><span class="p">(</span>
+        <span class="p">[</span><span class="n">spec_coord</span><span class="p">,</span> <span class="n">order_coord</span><span class="p">],</span>
+        <span class="n">wave</span><span class="p">,</span>
+        <span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">nspec_coeff</span> <span class="o">-</span> <span class="mi">1</span><span class="p">),</span> <span class="nb">max</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">norder_coeff</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)),</span>
+        <span class="n">domains</span><span class="o">=</span><span class="p">[(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">),</span> <span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">)],</span>
+        <span class="n">sigrej</span><span class="o">=</span><span class="n">sigrej</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">residual</span> <span class="o">=</span> <span class="n">wave</span> <span class="o">-</span> <span class="n">fit</span><span class="o">.</span><span class="n">evaluate</span><span class="p">([</span><span class="n">spec_coord</span><span class="p">,</span> <span class="n">order_coord</span><span class="p">])</span>
+    <span class="n">rms</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">sqrt</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">residual</span><span class="o">**</span><span class="mi">2</span><span class="p">)))</span> <span class="k">if</span> <span class="n">residual</span><span class="o">.</span><span class="n">size</span> <span class="k">else</span> <span class="nb">float</span><span class="p">(</span><span class="s2">"nan"</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">fit</span><span class="p">,</span> <span class="n">rms</span>
+</pre></div>
+</div></details>
+</main>
+<script defer src="static/katex/katex.min.js"></script>
+<script defer src="static/katex/auto-render.min.js"></script>
+<script defer src="static/guide.js"></script>
+</body>
+</html>

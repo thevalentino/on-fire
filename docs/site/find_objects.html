@@ -1,0 +1,457 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>find_objects - onfire</title>
+<link rel="stylesheet" href="static/katex/katex.min.css">
+<link rel="stylesheet" href="static/pygments.css">
+<link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+<nav class="sidebar">
+<a class="brand" href="index.html">onfire</a>
+<ul><li><a href="index.html">Overview</a></li><li><a href="quickstart.html">Quickstart</a></li><li><a href="frame-table.html">Frame Table</a></li><li><a href="parameter-config.html">Parameter Config</a></li><li><a href="interactive.html">Interactive analysis</a></li></ul>
+<div class="group">Reduction steps</div><ul><li><a href="prep_calibrations.html">prep_calibrations</a></li><li><a href="trace_orders.html">trace_orders</a></li><li><a href="calibrate_wavelengths.html">calibrate_wavelengths</a></li><li><a href="fit_tilts.html">fit_tilts</a></li><li><a href="process_science.html">process_science</a></li><li><a href="find_objects.html" aria-current="page">find_objects</a></li><li><a href="subtract_sky.html">subtract_sky</a></li><li><a href="extract_1d.html">extract_1d</a></li><li><a href="flux_calibrate.html">flux_calibrate</a></li><li><a href="telluric_correct.html">telluric_correct</a></li><li><a href="coadd_orders.html">coadd_orders</a></li><li><a href="extinction_correct.html">extinction_correct</a></li></ul>
+</nav>
+<main>
+<h1>find_objects</h1>
+<p class="purpose">Find the spatial position of every object in every order, trace each one along dispersion, and mark the pixels around them so the sky can be fit away from the objects.</p>
+<section><h2>Inputs and outputs</h2><p><strong>Reads</strong></p>
+<ul>
+<li><code>science</code>, <code>science_ivar</code> and <code>science_mask</code> from <code>process_science</code>.</li>
+<li><code>order_traces</code> from <code>trace_orders</code>.</li>
+<li>No Frame Table role is loaded for this step.</li>
+</ul>
+<p><strong>Writes</strong></p>
+<p>| Product | Contents |
+|---------|----------|
+| <code>objects</code> | Table with one row per detected object: <code>order</code>, <code>obj_id</code>, <code>fracpos</code>, <code>spat_pixpos</code>, <code>fwhm</code>, <code>box_radius</code>, <code>snr</code>, <code>rms</code>, <code>xmid</code>, <code>xscale</code>, <code>ncoeff</code>, <code>trace_coeff</code> and <code>masked</code>. |
+| <code>object_traces</code> | Spatial position of every object at every dispersion row, shape <code>(nspec, n_objects)</code>. |
+| <code>object_orders</code> | The order number of each object. |
+| <code>object_box_radii</code> | The extraction box radius of each object. |
+| <code>object_skymask</code> | Boolean image; <code>False</code> inside an object's box, <code>True</code> where the sky may be fit. |</p>
+<p><code>obj_id</code> is unique across all orders, counting in the order the objects are listed. An order without a usable edge trace is masked with the reason <code>no order trace</code>. An object whose trace fit fails stays in the table with its own <code>masked</code> flag set.</p>
+<p><strong>QA Artifacts:</strong> <code>object_profiles</code> (the spatial profile of each order) and <code>object_traces</code> (the traces over the science image).</p></section>
+<section><h2>How to call it</h2><p><strong>Command line</strong></p>
+<div class="codehilite"><pre><span></span><code>onfire<span class="w"> </span>reduce<span class="w"> </span>config.yaml<span class="w"> </span>--until<span class="w"> </span>find_objects
+</code></pre></div>
+
+<p><strong>Parameter Config</strong></p>
+<div class="codehilite"><pre><span></span><code><span class="nt">steps</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">find_objects</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">fwhm</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3.0</span><span class="w">                  </span><span class="c1"># expected object FWHM in pixels (default 3.0)</span>
+<span class="w">    </span><span class="nt">snr_thresh</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5.0</span><span class="w">            </span><span class="c1"># detection threshold on the profile S/N (default 5.0)</span>
+<span class="w">    </span><span class="nt">obj_ncoeff</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4</span><span class="w">              </span><span class="c1"># Legendre coefficients of each object's trace (default 4)</span>
+<span class="w">    </span><span class="nt">obj_trim_edg</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1.0</span><span class="w">          </span><span class="c1"># ignore peaks this many samples from an order edge (default 1.0)</span>
+<span class="w">    </span><span class="nt">box_factor</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4.0</span><span class="w">            </span><span class="c1"># extraction box radius, in units of fwhm (default 4.0)</span>
+<span class="w">    </span><span class="c1"># max_objects_per_order: 1 # keep only the brightest N objects per order (default no limit)</span>
+</code></pre></div>
+
+<p><strong>Python</strong>, one order, on a State Clone:</p>
+<div class="codehilite"><pre><span></span><code><span class="n">clone</span> <span class="o">=</span> <span class="n">baseline</span><span class="o">.</span><span class="n">run_step</span><span class="p">(</span><span class="s2">"find_objects"</span><span class="p">,</span> <span class="n">params</span><span class="o">=</span><span class="p">{</span><span class="s2">"snr_thresh"</span><span class="p">:</span> <span class="mf">3.0</span><span class="p">},</span> <span class="n">clone</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">order</span><span class="o">=</span><span class="mi">13</span><span class="p">)</span>
+<span class="n">fig</span> <span class="o">=</span> <span class="n">baseline</span><span class="o">.</span><span class="n">compare</span><span class="p">(</span><span class="n">clone</span><span class="p">,</span> <span class="s2">"find_objects"</span><span class="p">)</span>
+</code></pre></div>
+
+<p>With <code>order=</code> and an existing <code>objects</code> table, only that order is searched again, and the other orders keep their objects.</p></section>
+<section><h2>Figures</h2><figure class="pending"><div>figure pending: <code>find_objects/profile</code></div><figcaption>Collapsed spatial profile of one order with detected peaks</figcaption></figure>
+
+<figure class="pending"><div>figure pending: <code>find_objects/traces</code></div><figcaption>Object traces overlaid on the science image</figcaption></figure></section>
+<details><summary>Numerical methods and idea</summary><p>Orders are curved and slanted on the detector, so objects are searched for in a straightened copy of each order.</p>
+<p><strong>1. Rectify.</strong> Each order is resampled onto a uniform grid that runs from its left edge to its right edge at every row. The number of samples across is the widest order width in pixels, between 5 and 512.</p>
+<p><strong>2. Collapse to a profile.</strong> Along the dispersion axis, samples are iteratively rejected where they deviate from the column median by more than 5 robust sigma (using $1.4826\times\mathrm{MAD}$). The survivors are averaged into a mean spatial profile, and a quadratic baseline is subtracted so object peaks sit on a flat floor.</p>
+<p><strong>3. Signal-to-noise.</strong> The inverse variance image is rectified in the same way and propagated through the average, giving a S/N value for every sample of the profile.</p>
+<p><strong>4. Find peaks.</strong> The profile and its S/N are smoothed with a Gaussian of $\sigma = \mathrm{fwhm}/2.3548$. Local maxima that are positive and above <code>snr_thresh</code> in S/N are kept. Peaks within <code>obj_trim_edg</code> samples of an edge are discarded, and peaks closer together than $0.75\,\mathrm{fwhm}$ are thinned, keeping the brightest. If <code>max_objects_per_order</code> is set, only that many of the brightest remain.</p>
+<p><strong>5. Trace and fit.</strong> From the middle row, outward in both directions, the object's centroid is measured in a window of $\pm\mathrm{fwhm}$ pixels, and each row is allowed to move at most one pixel from the position expected from the rectified peak. The centroids are fit with a Legendre series of <code>obj_ncoeff</code> terms with iterative 3-sigma rejection, the same polynomial family used for the order edges.</p>
+<p><strong>6. Sky mask.</strong> For every object, the pixels within <code>box_factor</code> $\times$ <code>fwhm</code> of its trace are set to <code>False</code> in <code>object_skymask</code>. <code>subtract_sky</code> fits the sky only where the mask is <code>True</code>.</p></details>
+<details><summary>Where this happens in the code</summary><p>The Step Engine loops over orders, builds the tables and the sky mask:</p>
+<div class="code-ref"><div class="code-label">onfire/core/engines.py:1287</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">find_objects</span><span class="p">(</span>
+    <span class="n">products</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+    <span class="n">meta</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+    <span class="n">params</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">StepResult</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Detect spatial object profiles and trace them per order (step 6).</span>
+
+<span class="sd">    Each order is rectified along its edge traces, collapsed into a</span>
+<span class="sd">    sigma-clipped spatial profile, and searched for peaks above the S/N</span>
+<span class="sd">    threshold. The detected centroids are traced along dispersion and fit with</span>
+<span class="sd">    a Legendre polynomial. Background pixels outside the object boxes are</span>
+<span class="sd">    flagged so :func:`subtract_sky` can fit the sky around the objects.</span>
+<span class="sd">    """</span>
+    <span class="n">image</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"science"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">image</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="s2">"find_objects requires a 'science' product; run process_science first"</span>
+        <span class="p">)</span>
+    <span class="n">traces_product</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"order_traces"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">traces_product</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="s2">"find_objects requires an 'order_traces' product; run trace_orders first"</span>
+        <span class="p">)</span>
+    <span class="n">image</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">image</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">nspec</span><span class="p">,</span> <span class="n">nspat</span> <span class="o">=</span> <span class="n">image</span><span class="o">.</span><span class="n">shape</span>
+    <span class="n">ivar</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"science_ivar"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">ivar</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">ivar</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">image</span><span class="p">),</span> <span class="mf">1.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">)</span>
+    <span class="n">ivar</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">ivar</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">science_mask</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"science_mask"</span><span class="p">)</span>
+    <span class="n">science_mask</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="kc">None</span> <span class="k">if</span> <span class="n">science_mask</span> <span class="ow">is</span> <span class="kc">None</span> <span class="k">else</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">science_mask</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">bool</span><span class="p">)</span>
+    <span class="p">)</span>
+
+    <span class="n">fwhm</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"fwhm"</span><span class="p">,</span> <span class="mf">3.0</span><span class="p">))</span>
+    <span class="n">snr_thresh</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"snr_thresh"</span><span class="p">,</span> <span class="mf">5.0</span><span class="p">))</span>
+    <span class="n">ncoeff</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"obj_ncoeff"</span><span class="p">,</span> <span class="mi">4</span><span class="p">))</span>
+    <span class="n">trim_edg</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"obj_trim_edg"</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">))</span>
+    <span class="n">box_factor</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"box_factor"</span><span class="p">,</span> <span class="mf">4.0</span><span class="p">))</span>
+    <span class="n">max_objects</span> <span class="o">=</span> <span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"max_objects_per_order"</span><span class="p">)</span>
+    <span class="n">max_objects</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">max_objects</span><span class="p">)</span> <span class="k">if</span> <span class="n">max_objects</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="kc">None</span>
+
+    <span class="n">existing_table</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"objects"</span><span class="p">)</span>
+    <span class="n">target_index</span> <span class="o">=</span> <span class="n">_target_order_index</span><span class="p">(</span><span class="n">params</span><span class="p">)</span>
+    <span class="n">per_order</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">list</span><span class="p">[</span><span class="n">ObjectTrace</span><span class="p">]]</span> <span class="o">=</span> <span class="p">{}</span>
+    <span class="k">if</span> <span class="n">target_index</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">existing_table</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">per_order</span> <span class="o">=</span> <span class="n">_objects_from_table</span><span class="p">(</span><span class="n">existing_table</span><span class="p">)</span>
+        <span class="n">indices</span> <span class="o">=</span> <span class="p">[</span><span class="n">target_index</span><span class="p">]</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">indices</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="nb">range</span><span class="p">(</span><span class="n">FIRE_NORDERS</span><span class="p">))</span>
+
+    <span class="n">diagnostics</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]]</span> <span class="o">=</span> <span class="p">{}</span>
+    <span class="n">masked_orders</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
+    <span class="k">for</span> <span class="n">index</span> <span class="ow">in</span> <span class="n">indices</span><span class="p">:</span>
+        <span class="n">order</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">FIRE_ORDER_NUMBERS</span><span class="p">[</span><span class="n">index</span><span class="p">])</span>
+        <span class="n">edges</span> <span class="o">=</span> <span class="n">_order_edges</span><span class="p">(</span><span class="n">traces_product</span><span class="p">,</span> <span class="n">order</span><span class="p">,</span> <span class="n">nspec</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">edges</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">per_order</span><span class="p">[</span><span class="n">order</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+            <span class="n">masked_orders</span><span class="p">[</span><span class="n">order</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"no order trace"</span>
+            <span class="k">continue</span>
+        <span class="n">left</span><span class="p">,</span> <span class="n">right</span> <span class="o">=</span> <span class="n">edges</span>
+        <span class="n">detected</span><span class="p">,</span> <span class="n">profile</span><span class="p">,</span> <span class="n">snr</span><span class="p">,</span> <span class="n">peaks</span> <span class="o">=</span> <span class="n">_detect_order_objects</span><span class="p">(</span>
+            <span class="n">image</span><span class="p">,</span>
+            <span class="n">ivar</span><span class="p">,</span>
+            <span class="n">science_mask</span><span class="p">,</span>
+            <span class="n">left</span><span class="p">,</span>
+            <span class="n">right</span><span class="p">,</span>
+            <span class="n">order</span><span class="p">,</span>
+            <span class="n">fwhm</span><span class="o">=</span><span class="n">fwhm</span><span class="p">,</span>
+            <span class="n">snr_thresh</span><span class="o">=</span><span class="n">snr_thresh</span><span class="p">,</span>
+            <span class="n">ncoeff</span><span class="o">=</span><span class="n">ncoeff</span><span class="p">,</span>
+            <span class="n">trim_edg</span><span class="o">=</span><span class="n">trim_edg</span><span class="p">,</span>
+            <span class="n">box_factor</span><span class="o">=</span><span class="n">box_factor</span><span class="p">,</span>
+            <span class="n">max_objects</span><span class="o">=</span><span class="n">max_objects</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="n">per_order</span><span class="p">[</span><span class="n">order</span><span class="p">]</span> <span class="o">=</span> <span class="n">detected</span>
+        <span class="n">diagnostics</span><span class="p">[</span><span class="n">order</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span><span class="n">profile</span><span class="p">,</span> <span class="n">snr</span><span class="p">,</span> <span class="n">peaks</span><span class="p">)</span>
+
+    <span class="n">ordered_traces</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">ObjectTrace</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="k">for</span> <span class="n">order</span> <span class="ow">in</span> <span class="n">FIRE_ORDER_NUMBERS</span><span class="p">:</span>
+        <span class="n">ordered_traces</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span><span class="n">per_order</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="nb">int</span><span class="p">(</span><span class="n">order</span><span class="p">),</span> <span class="p">[]))</span>
+
+    <span class="n">rows</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="n">nspec</span><span class="p">)</span>
+    <span class="n">object_traces</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">full</span><span class="p">((</span><span class="n">nspec</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">ordered_traces</span><span class="p">)),</span> <span class="n">np</span><span class="o">.</span><span class="n">nan</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">object_skymask</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">ones</span><span class="p">((</span><span class="n">nspec</span><span class="p">,</span> <span class="n">nspat</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">bool</span><span class="p">)</span>
+    <span class="k">for</span> <span class="n">j</span><span class="p">,</span> <span class="n">trace</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">ordered_traces</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">trace</span><span class="o">.</span><span class="n">masked</span><span class="p">:</span>
+            <span class="k">continue</span>
+        <span class="n">positions</span> <span class="o">=</span> <span class="n">evaluate_trace</span><span class="p">(</span><span class="n">trace</span><span class="o">.</span><span class="n">coeff</span><span class="p">,</span> <span class="n">trace</span><span class="o">.</span><span class="n">xmid</span><span class="p">,</span> <span class="n">trace</span><span class="o">.</span><span class="n">xscale</span><span class="p">,</span> <span class="n">rows</span><span class="p">)</span>
+        <span class="n">object_traces</span><span class="p">[:,</span> <span class="n">j</span><span class="p">]</span> <span class="o">=</span> <span class="n">positions</span>
+        <span class="n">radius</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">trace</span><span class="o">.</span><span class="n">box_radius</span><span class="p">)</span>
+        <span class="k">for</span> <span class="n">row</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">nspec</span><span class="p">):</span>
+            <span class="n">centre</span> <span class="o">=</span> <span class="n">positions</span><span class="p">[</span><span class="n">row</span><span class="p">]</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">centre</span><span class="p">):</span>
+                <span class="k">continue</span>
+            <span class="n">lo</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="nb">int</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">floor</span><span class="p">(</span><span class="n">centre</span> <span class="o">-</span> <span class="n">radius</span><span class="p">)))</span>
+            <span class="n">hi</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="n">nspat</span><span class="p">,</span> <span class="nb">int</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">ceil</span><span class="p">(</span><span class="n">centre</span> <span class="o">+</span> <span class="n">radius</span><span class="p">))</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">hi</span> <span class="o">&gt;</span> <span class="n">lo</span><span class="p">:</span>
+                <span class="n">object_skymask</span><span class="p">[</span><span class="n">row</span><span class="p">,</span> <span class="n">lo</span><span class="p">:</span><span class="n">hi</span><span class="p">]</span> <span class="o">=</span> <span class="kc">False</span>
+
+    <span class="n">table</span> <span class="o">=</span> <span class="n">_objects_table</span><span class="p">(</span><span class="n">ordered_traces</span><span class="p">,</span> <span class="n">ncoeff</span><span class="p">)</span>
+    <span class="n">object_orders</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">([</span><span class="n">t</span><span class="o">.</span><span class="n">order</span> <span class="k">for</span> <span class="n">t</span> <span class="ow">in</span> <span class="n">ordered_traces</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">int16</span><span class="p">)</span>
+    <span class="n">object_box_radii</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">([</span><span class="n">t</span><span class="o">.</span><span class="n">box_radius</span> <span class="k">for</span> <span class="n">t</span> <span class="ow">in</span> <span class="n">ordered_traces</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
+
+    <span class="n">profiles_figure</span> <span class="o">=</span> <span class="n">_object_profile_figure</span><span class="p">(</span><span class="n">diagnostics</span><span class="p">)</span>
+    <span class="n">traces_figure</span> <span class="o">=</span> <span class="n">_object_traces_figure</span><span class="p">(</span><span class="n">image</span><span class="p">,</span> <span class="n">object_traces</span><span class="p">,</span> <span class="n">object_orders</span><span class="p">)</span>
+
+    <span class="n">n_masked</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">table</span><span class="p">[</span><span class="s2">"masked"</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">bool</span><span class="p">)</span><span class="o">.</span><span class="n">sum</span><span class="p">())</span>
+    <span class="k">return</span> <span class="n">StepResult</span><span class="p">(</span>
+        <span class="n">products</span><span class="o">=</span><span class="p">{</span>
+            <span class="s2">"objects"</span><span class="p">:</span> <span class="n">table</span><span class="p">,</span>
+            <span class="s2">"object_traces"</span><span class="p">:</span> <span class="n">object_traces</span><span class="p">,</span>
+            <span class="s2">"object_orders"</span><span class="p">:</span> <span class="n">object_orders</span><span class="p">,</span>
+            <span class="s2">"object_box_radii"</span><span class="p">:</span> <span class="n">object_box_radii</span><span class="p">,</span>
+            <span class="s2">"object_skymask"</span><span class="p">:</span> <span class="n">object_skymask</span><span class="p">,</span>
+        <span class="p">},</span>
+        <span class="n">meta</span><span class="o">=</span><span class="p">{</span>
+            <span class="s2">"n_objects"</span><span class="p">:</span> <span class="nb">int</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">ordered_traces</span><span class="p">)),</span>
+            <span class="s2">"n_objects_masked"</span><span class="p">:</span> <span class="n">n_masked</span><span class="p">,</span>
+            <span class="s2">"object_fwhm"</span><span class="p">:</span> <span class="n">fwhm</span><span class="p">,</span>
+            <span class="s2">"object_snr_thresh"</span><span class="p">:</span> <span class="n">snr_thresh</span><span class="p">,</span>
+        <span class="p">},</span>
+        <span class="n">plots</span><span class="o">=</span><span class="p">{</span><span class="s2">"object_profiles"</span><span class="p">:</span> <span class="n">profiles_figure</span><span class="p">,</span> <span class="s2">"object_traces"</span><span class="p">:</span> <span class="n">traces_figure</span><span class="p">},</span>
+        <span class="n">masked_orders</span><span class="o">=</span><span class="n">masked_orders</span><span class="p">,</span>
+    <span class="p">)</span>
+</pre></div>
+</div>
+<p>Per-order detection:</p>
+<div class="code-ref"><div class="code-label">onfire/core/engines.py:1219</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">_detect_order_objects</span><span class="p">(</span>
+    <span class="n">image</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">ivar</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">mask</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span> <span class="o">|</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">left</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">right</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">order</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">fwhm</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
+    <span class="n">snr_thresh</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
+    <span class="n">ncoeff</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="n">trim_edg</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
+    <span class="n">box_factor</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
+    <span class="n">max_objects</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">list</span><span class="p">[</span><span class="n">ObjectTrace</span><span class="p">],</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""Detect and trace objects within one order, returning QA diagnostics."""</span>
+    <span class="n">nspec</span> <span class="o">=</span> <span class="n">image</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+    <span class="n">width</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">nanmax</span><span class="p">(</span><span class="n">right</span> <span class="o">-</span> <span class="n">left</span><span class="p">)</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">width</span><span class="p">)</span> <span class="ow">or</span> <span class="n">width</span> <span class="o">&lt;</span> <span class="mi">3</span><span class="p">:</span>
+        <span class="k">return</span> <span class="p">[],</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([]),</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([]),</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([],</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">int</span><span class="p">)</span>
+    <span class="n">nsamp</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="nb">min</span><span class="p">(</span><span class="mi">512</span><span class="p">,</span> <span class="nb">max</span><span class="p">(</span><span class="mi">5</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ceil</span><span class="p">(</span><span class="n">width</span><span class="p">))))</span>
+    <span class="n">rect</span><span class="p">,</span> <span class="n">spat</span> <span class="o">=</span> <span class="n">rectify_order</span><span class="p">(</span><span class="n">image</span><span class="p">,</span> <span class="n">left</span><span class="p">,</span> <span class="n">right</span><span class="p">,</span> <span class="n">nsamp</span><span class="p">)</span>
+    <span class="n">valid</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">rect</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">mask</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">mask_rect</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">rectify_order</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">mask</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">),</span> <span class="n">left</span><span class="p">,</span> <span class="n">right</span><span class="p">,</span> <span class="n">nsamp</span><span class="p">)</span>
+        <span class="n">valid</span> <span class="o">&amp;=</span> <span class="n">mask_rect</span> <span class="o">&gt;</span> <span class="mf">0.5</span>
+    <span class="n">rect_ivar</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">rectify_order</span><span class="p">(</span><span class="n">ivar</span><span class="p">,</span> <span class="n">left</span><span class="p">,</span> <span class="n">right</span><span class="p">,</span> <span class="n">nsamp</span><span class="p">)</span>
+    <span class="n">rect_ivar</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">nan_to_num</span><span class="p">(</span><span class="n">rect_ivar</span><span class="p">,</span> <span class="n">nan</span><span class="o">=</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">posinf</span><span class="o">=</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">neginf</span><span class="o">=</span><span class="mf">0.0</span><span class="p">)</span>
+
+    <span class="n">profile</span><span class="p">,</span> <span class="n">good</span> <span class="o">=</span> <span class="n">collapse_profile</span><span class="p">(</span><span class="n">rect</span><span class="p">,</span> <span class="n">gpm</span><span class="o">=</span><span class="n">valid</span><span class="p">)</span>
+    <span class="n">snr</span> <span class="o">=</span> <span class="n">profile_snr</span><span class="p">(</span><span class="n">rect_ivar</span><span class="p">,</span> <span class="n">good</span><span class="p">,</span> <span class="n">profile</span><span class="p">)</span>
+    <span class="n">peaks</span><span class="p">,</span> <span class="n">peak_snr</span> <span class="o">=</span> <span class="n">find_profile_peaks</span><span class="p">(</span>
+        <span class="n">profile</span><span class="p">,</span>
+        <span class="n">snr</span><span class="o">=</span><span class="n">snr</span><span class="p">,</span>
+        <span class="n">threshold</span><span class="o">=</span><span class="n">snr_thresh</span><span class="p">,</span>
+        <span class="n">fwhm</span><span class="o">=</span><span class="n">fwhm</span><span class="p">,</span>
+        <span class="n">trim_edg</span><span class="o">=</span><span class="n">trim_edg</span><span class="p">,</span>
+        <span class="n">max_objects</span><span class="o">=</span><span class="n">max_objects</span><span class="p">,</span>
+    <span class="p">)</span>
+
+    <span class="n">traces</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">ObjectTrace</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="k">for</span> <span class="n">k</span><span class="p">,</span> <span class="n">peak</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">peaks</span><span class="p">):</span>
+        <span class="n">positions</span><span class="p">,</span> <span class="n">xmid</span><span class="p">,</span> <span class="n">xscale</span> <span class="o">=</span> <span class="n">trace_object</span><span class="p">(</span>
+            <span class="n">rect</span><span class="p">,</span> <span class="n">spat</span><span class="p">,</span> <span class="n">valid</span><span class="p">,</span> <span class="nb">int</span><span class="p">(</span><span class="n">peak</span><span class="p">),</span> <span class="n">half_width</span><span class="o">=</span><span class="n">fwhm</span><span class="p">,</span> <span class="n">maxshift</span><span class="o">=</span><span class="mf">1.0</span>
+        <span class="p">)</span>
+        <span class="n">coeff</span><span class="p">,</span> <span class="n">rms</span> <span class="o">=</span> <span class="n">fit_trace</span><span class="p">(</span><span class="n">positions</span><span class="p">,</span> <span class="n">ncoeff</span><span class="o">=</span><span class="n">ncoeff</span><span class="p">)</span>
+        <span class="n">failed</span> <span class="o">=</span> <span class="ow">not</span> <span class="n">np</span><span class="o">.</span><span class="n">all</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">coeff</span><span class="p">))</span>
+        <span class="n">centre</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span>
+            <span class="n">evaluate_trace</span><span class="p">(</span><span class="n">coeff</span><span class="p">,</span> <span class="n">xmid</span><span class="p">,</span> <span class="n">xscale</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="n">nspec</span> <span class="o">//</span> <span class="mi">2</span><span class="p">]))[</span><span class="mi">0</span><span class="p">]</span>
+        <span class="p">)</span> <span class="k">if</span> <span class="ow">not</span> <span class="n">failed</span> <span class="k">else</span> <span class="nb">float</span><span class="p">(</span><span class="n">spat</span><span class="p">[</span><span class="n">nspec</span> <span class="o">//</span> <span class="mi">2</span><span class="p">,</span> <span class="nb">int</span><span class="p">(</span><span class="n">peak</span><span class="p">)])</span>
+        <span class="n">traces</span><span class="o">.</span><span class="n">append</span><span class="p">(</span>
+            <span class="n">ObjectTrace</span><span class="p">(</span>
+                <span class="n">order</span><span class="o">=</span><span class="n">order</span><span class="p">,</span>
+                <span class="n">coeff</span><span class="o">=</span><span class="n">coeff</span><span class="p">,</span>
+                <span class="n">xmid</span><span class="o">=</span><span class="n">xmid</span><span class="p">,</span>
+                <span class="n">xscale</span><span class="o">=</span><span class="n">xscale</span><span class="p">,</span>
+                <span class="n">rms</span><span class="o">=</span><span class="n">rms</span><span class="p">,</span>
+                <span class="n">fracpos</span><span class="o">=</span><span class="nb">float</span><span class="p">((</span><span class="n">peak</span> <span class="o">+</span> <span class="mf">0.5</span><span class="p">)</span> <span class="o">/</span> <span class="n">nsamp</span><span class="p">),</span>
+                <span class="n">spat_pixpos</span><span class="o">=</span><span class="n">centre</span><span class="p">,</span>
+                <span class="n">fwhm</span><span class="o">=</span><span class="nb">float</span><span class="p">(</span><span class="n">fwhm</span><span class="p">),</span>
+                <span class="n">box_radius</span><span class="o">=</span><span class="nb">float</span><span class="p">(</span><span class="n">box_factor</span> <span class="o">*</span> <span class="n">fwhm</span><span class="p">),</span>
+                <span class="n">snr</span><span class="o">=</span><span class="nb">float</span><span class="p">(</span><span class="n">peak_snr</span><span class="p">[</span><span class="n">k</span><span class="p">]),</span>
+                <span class="n">masked</span><span class="o">=</span><span class="n">failed</span><span class="p">,</span>
+            <span class="p">)</span>
+        <span class="p">)</span>
+    <span class="k">return</span> <span class="n">traces</span><span class="p">,</span> <span class="n">profile</span><span class="p">,</span> <span class="n">snr</span><span class="p">,</span> <span class="n">peaks</span>
+</pre></div>
+</div>
+<p>The pure array algorithms in <code>onfire/core/objects.py</code>:</p>
+<div class="code-ref"><div class="code-label">onfire/core/objects.py:93</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">collapse_profile</span><span class="p">(</span>
+    <span class="n">rect</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">gpm</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">ndeg</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">2</span><span class="p">,</span>
+    <span class="n">sigclip</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">5.0</span><span class="p">,</span>
+    <span class="n">niter</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">10</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""Collapse a rectified order into a continuum-subtracted spatial profile.</span>
+
+<span class="sd">    Pixels are sigma-clipped along the dispersion axis, the surviving samples</span>
+<span class="sd">    are averaged into a mean spatial profile, and a low-order polynomial is</span>
+<span class="sd">    subtracted so the object peaks sit on a flat baseline.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        rect: Rectified order image, shape ``(nspec, nsamp)``.</span>
+<span class="sd">        gpm: Optional good-pixel mask, same shape as ``rect``.</span>
+<span class="sd">        ndeg: Degree of the baseline polynomial to subtract.</span>
+<span class="sd">        sigclip: Rejection threshold in robust sigma.</span>
+<span class="sd">        niter: Maximum number of rejection iterations.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        ``(profile, good)`` with the baseline-subtracted profile and the final</span>
+<span class="sd">        good-pixel mask.</span>
+<span class="sd">    """</span>
+    <span class="n">rect</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">rect</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">data</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">rect</span><span class="p">),</span> <span class="n">rect</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">nan</span><span class="p">)</span>
+    <span class="n">good</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">rect</span><span class="p">)</span> <span class="k">if</span> <span class="n">gpm</span> <span class="ow">is</span> <span class="kc">None</span> <span class="k">else</span> <span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">gpm</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">bool</span><span class="p">)</span> <span class="o">&amp;</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">rect</span><span class="p">))</span>
+
+    <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">niter</span><span class="p">)):</span>
+        <span class="n">masked</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">good</span><span class="p">,</span> <span class="n">data</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">nan</span><span class="p">)</span>
+        <span class="n">median</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">nanmedian</span><span class="p">(</span><span class="n">masked</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+        <span class="n">dispersion</span> <span class="o">=</span> <span class="mf">1.4826</span> <span class="o">*</span> <span class="n">np</span><span class="o">.</span><span class="n">nanmedian</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">abs</span><span class="p">(</span><span class="n">masked</span> <span class="o">-</span> <span class="n">median</span><span class="p">),</span> <span class="n">axis</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+        <span class="k">with</span> <span class="n">np</span><span class="o">.</span><span class="n">errstate</span><span class="p">(</span><span class="n">invalid</span><span class="o">=</span><span class="s2">"ignore"</span><span class="p">,</span> <span class="n">divide</span><span class="o">=</span><span class="s2">"ignore"</span><span class="p">):</span>
+            <span class="n">deviation</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">abs</span><span class="p">(</span><span class="n">masked</span> <span class="o">-</span> <span class="n">median</span><span class="p">)</span> <span class="o">/</span> <span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">dispersion</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">,</span> <span class="n">dispersion</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">inf</span><span class="p">)</span>
+        <span class="n">new_good</span> <span class="o">=</span> <span class="n">good</span> <span class="o">&amp;</span> <span class="p">((</span><span class="n">deviation</span> <span class="o">&lt;=</span> <span class="n">sigclip</span><span class="p">)</span> <span class="o">|</span> <span class="p">(</span><span class="n">dispersion</span> <span class="o">==</span> <span class="mi">0</span><span class="p">))</span>
+        <span class="k">if</span> <span class="n">np</span><span class="o">.</span><span class="n">array_equal</span><span class="p">(</span><span class="n">new_good</span><span class="p">,</span> <span class="n">good</span><span class="p">):</span>
+            <span class="k">break</span>
+        <span class="n">good</span> <span class="o">=</span> <span class="n">new_good</span>
+
+    <span class="n">npix</span> <span class="o">=</span> <span class="n">good</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+    <span class="n">flux</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">nansum</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">good</span><span class="p">,</span> <span class="n">data</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">),</span> <span class="n">axis</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span> <span class="o">/</span> <span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">npix</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">,</span> <span class="n">npix</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span>
+    <span class="n">flux</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">npix</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">,</span> <span class="n">flux</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">nan</span><span class="p">)</span>
+
+    <span class="n">nsamp</span> <span class="o">=</span> <span class="n">rect</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span>
+    <span class="n">x</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="n">nsamp</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">finite</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">flux</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">finite</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span> <span class="o">&gt;</span> <span class="n">ndeg</span> <span class="o">+</span> <span class="mi">1</span><span class="p">:</span>
+        <span class="n">coeff</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">polyfit</span><span class="p">(</span><span class="n">x</span><span class="p">[</span><span class="n">finite</span><span class="p">],</span> <span class="n">flux</span><span class="p">[</span><span class="n">finite</span><span class="p">],</span> <span class="n">ndeg</span><span class="p">)</span>
+        <span class="n">baseline</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">polyval</span><span class="p">(</span><span class="n">coeff</span><span class="p">,</span> <span class="n">x</span><span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">baseline</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">nanmedian</span><span class="p">(</span><span class="n">flux</span><span class="p">)</span> <span class="k">if</span> <span class="n">finite</span><span class="o">.</span><span class="n">any</span><span class="p">()</span> <span class="k">else</span> <span class="mf">0.0</span>
+    <span class="n">profile</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">finite</span><span class="p">,</span> <span class="n">flux</span> <span class="o">-</span> <span class="n">baseline</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">nan</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">profile</span><span class="p">,</span> <span class="n">good</span>
+</pre></div>
+</div>
+<div class="code-ref"><div class="code-label">onfire/core/objects.py:179</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">find_profile_peaks</span><span class="p">(</span>
+    <span class="n">profile</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">snr</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">threshold</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">5.0</span><span class="p">,</span>
+    <span class="n">fwhm</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">3.0</span><span class="p">,</span>
+    <span class="n">min_sep_frac</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.75</span><span class="p">,</span>
+    <span class="n">trim_edg</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1.0</span><span class="p">,</span>
+    <span class="n">max_objects</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""Detect object peaks in a continuum-subtracted spatial profile.</span>
+
+<span class="sd">    The profile (or its S/N) is smoothed with a Gaussian matched to ``fwhm``,</span>
+<span class="sd">    local maxima above ``threshold`` are collected, peaks within ``trim_edg``</span>
+<span class="sd">    samples of either edge are discarded, and the survivors are thinned to a</span>
+<span class="sd">    minimum separation of ``min_sep_frac * fwhm``.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        ``(peaks, peak_snr)`` arrays of sample indices and their S/N values.</span>
+<span class="sd">    """</span>
+    <span class="n">profile</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">profile</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">nsamp</span> <span class="o">=</span> <span class="n">profile</span><span class="o">.</span><span class="n">size</span>
+    <span class="n">sigma</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="nb">float</span><span class="p">(</span><span class="n">fwhm</span><span class="p">)</span> <span class="o">/</span> <span class="mf">2.3548</span><span class="p">,</span> <span class="mf">0.5</span><span class="p">)</span>
+    <span class="n">smoothed</span> <span class="o">=</span> <span class="n">gaussian_filter1d</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">nan_to_num</span><span class="p">(</span><span class="n">profile</span><span class="p">,</span> <span class="n">nan</span><span class="o">=</span><span class="mf">0.0</span><span class="p">),</span> <span class="n">sigma</span><span class="p">)</span>
+
+    <span class="k">if</span> <span class="n">snr</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">smoothed_snr</span> <span class="o">=</span> <span class="n">gaussian_filter1d</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">nan_to_num</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">snr</span><span class="p">,</span> <span class="nb">float</span><span class="p">),</span> <span class="n">nan</span><span class="o">=</span><span class="mf">0.0</span><span class="p">),</span> <span class="n">sigma</span><span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">scatter</span> <span class="o">=</span> <span class="mf">1.4826</span> <span class="o">*</span> <span class="n">np</span><span class="o">.</span><span class="n">median</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">abs</span><span class="p">(</span><span class="n">profile</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">profile</span><span class="p">)]</span> <span class="o">-</span> <span class="n">np</span><span class="o">.</span><span class="n">median</span><span class="p">(</span><span class="n">profile</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">profile</span><span class="p">)])))</span> <span class="k">if</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">profile</span><span class="p">)</span><span class="o">.</span><span class="n">any</span><span class="p">()</span> <span class="k">else</span> <span class="mf">0.0</span>
+        <span class="k">if</span> <span class="n">scatter</span> <span class="o">&lt;=</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="n">scatter</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">nanstd</span><span class="p">(</span><span class="n">profile</span><span class="p">))</span> <span class="ow">or</span> <span class="mf">1.0</span>
+        <span class="n">smoothed_snr</span> <span class="o">=</span> <span class="n">smoothed</span> <span class="o">/</span> <span class="n">scatter</span>
+
+    <span class="n">interior</span> <span class="o">=</span> <span class="p">(</span><span class="n">smoothed</span><span class="p">[</span><span class="mi">1</span><span class="p">:</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span> <span class="o">&gt;</span> <span class="n">smoothed</span><span class="p">[:</span><span class="o">-</span><span class="mi">2</span><span class="p">])</span> <span class="o">&amp;</span> <span class="p">(</span><span class="n">smoothed</span><span class="p">[</span><span class="mi">1</span><span class="p">:</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span> <span class="o">&gt;=</span> <span class="n">smoothed</span><span class="p">[</span><span class="mi">2</span><span class="p">:])</span>
+    <span class="n">candidates</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">interior</span><span class="p">)[</span><span class="mi">0</span><span class="p">]</span> <span class="o">+</span> <span class="mi">1</span>
+    <span class="n">candidates</span> <span class="o">=</span> <span class="n">candidates</span><span class="p">[</span><span class="n">smoothed</span><span class="p">[</span><span class="n">candidates</span><span class="p">]</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">]</span>
+    <span class="n">candidates</span> <span class="o">=</span> <span class="n">candidates</span><span class="p">[</span><span class="n">smoothed_snr</span><span class="p">[</span><span class="n">candidates</span><span class="p">]</span> <span class="o">&gt;=</span> <span class="nb">float</span><span class="p">(</span><span class="n">threshold</span><span class="p">)]</span>
+    <span class="n">candidates</span> <span class="o">=</span> <span class="n">candidates</span><span class="p">[</span>
+        <span class="p">(</span><span class="n">candidates</span> <span class="o">&gt;=</span> <span class="n">trim_edg</span><span class="p">)</span> <span class="o">&amp;</span> <span class="p">(</span><span class="n">candidates</span> <span class="o">&lt;=</span> <span class="n">nsamp</span> <span class="o">-</span> <span class="mi">1</span> <span class="o">-</span> <span class="n">trim_edg</span><span class="p">)</span>
+    <span class="p">]</span>
+
+    <span class="k">if</span> <span class="n">candidates</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">candidates</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([],</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+
+    <span class="n">min_sep</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">min_sep_frac</span> <span class="o">*</span> <span class="nb">float</span><span class="p">(</span><span class="n">fwhm</span><span class="p">))</span>
+    <span class="n">order</span> <span class="o">=</span> <span class="n">candidates</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">argsort</span><span class="p">(</span><span class="o">-</span><span class="n">smoothed</span><span class="p">[</span><span class="n">candidates</span><span class="p">])]</span>
+    <span class="n">kept</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="k">for</span> <span class="n">peak</span> <span class="ow">in</span> <span class="n">order</span><span class="p">:</span>
+        <span class="k">if</span> <span class="nb">all</span><span class="p">(</span><span class="nb">abs</span><span class="p">(</span><span class="n">peak</span> <span class="o">-</span> <span class="n">chosen</span><span class="p">)</span> <span class="o">&gt;=</span> <span class="n">min_sep</span> <span class="k">for</span> <span class="n">chosen</span> <span class="ow">in</span> <span class="n">kept</span><span class="p">):</span>
+            <span class="n">kept</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="nb">int</span><span class="p">(</span><span class="n">peak</span><span class="p">))</span>
+    <span class="n">peaks</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">sort</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">kept</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">int</span><span class="p">))</span>
+
+    <span class="k">if</span> <span class="n">max_objects</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">peaks</span><span class="o">.</span><span class="n">size</span> <span class="o">&gt;</span> <span class="n">max_objects</span><span class="p">:</span>
+        <span class="n">ranked</span> <span class="o">=</span> <span class="n">peaks</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">argsort</span><span class="p">(</span><span class="o">-</span><span class="n">smoothed</span><span class="p">[</span><span class="n">peaks</span><span class="p">])][:</span><span class="n">max_objects</span><span class="p">]</span>
+        <span class="n">peaks</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">sort</span><span class="p">(</span><span class="n">ranked</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">peaks</span><span class="p">,</span> <span class="n">smoothed_snr</span><span class="p">[</span><span class="n">peaks</span><span class="p">]</span>
+</pre></div>
+</div>
+<div class="code-ref"><div class="code-label">onfire/core/objects.py:256</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">trace_object</span><span class="p">(</span>
+    <span class="n">rect</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">spat</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">valid</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">peak_index</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">half_width</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
+    <span class="n">maxshift</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1.0</span><span class="p">,</span>
+    <span class="n">ref_row</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="nb">float</span><span class="p">,</span> <span class="nb">float</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""Trace one object's spatial centroid along the dispersion axis.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        rect: Rectified order image, shape ``(nspec, nsamp)``.</span>
+<span class="sd">        spat: Detector spatial coordinate of each rectified sample.</span>
+<span class="sd">        valid: Good-pixel mask of the rectified image.</span>
+<span class="sd">        peak_index: Sample index of the object peak at the reference row.</span>
+<span class="sd">        half_width: Half-width of the centroid window, in pixels.</span>
+<span class="sd">        maxshift: Maximum centroid shift between adjacent rows, in pixels.</span>
+<span class="sd">        ref_row: Reference dispersion row; defaults to the middle row.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        ``(positions, xmid, xscale)`` with the per-row centroid positions and</span>
+<span class="sd">        the dispersion-coordinate normalization.</span>
+<span class="sd">    """</span>
+    <span class="n">rect</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">rect</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">spat</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">spat</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">valid</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">valid</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">bool</span><span class="p">)</span>
+    <span class="n">nspec</span> <span class="o">=</span> <span class="n">rect</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+    <span class="k">if</span> <span class="n">ref_row</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">ref_row</span> <span class="o">=</span> <span class="n">nspec</span> <span class="o">//</span> <span class="mi">2</span>
+
+    <span class="n">residual</span> <span class="o">=</span> <span class="n">_row_residual</span><span class="p">(</span><span class="n">rect</span><span class="p">,</span> <span class="n">valid</span><span class="p">)</span>
+    <span class="n">positions</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">full</span><span class="p">(</span><span class="n">nspec</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">nan</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_step</span><span class="p">(</span><span class="n">row</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">expected</span><span class="p">:</span> <span class="nb">float</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span><span class="p">:</span>
+        <span class="n">row_valid</span> <span class="o">=</span> <span class="n">valid</span><span class="p">[</span><span class="n">row</span><span class="p">]</span> <span class="o">&amp;</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">spat</span><span class="p">[</span><span class="n">row</span><span class="p">])</span>
+        <span class="n">lo</span> <span class="o">=</span> <span class="n">expected</span> <span class="o">-</span> <span class="n">half_width</span>
+        <span class="n">hi</span> <span class="o">=</span> <span class="n">expected</span> <span class="o">+</span> <span class="n">half_width</span>
+        <span class="n">window</span> <span class="o">=</span> <span class="n">row_valid</span> <span class="o">&amp;</span> <span class="p">(</span><span class="n">spat</span><span class="p">[</span><span class="n">row</span><span class="p">]</span> <span class="o">&gt;=</span> <span class="n">lo</span><span class="p">)</span> <span class="o">&amp;</span> <span class="p">(</span><span class="n">spat</span><span class="p">[</span><span class="n">row</span><span class="p">]</span> <span class="o">&lt;=</span> <span class="n">hi</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">window</span><span class="o">.</span><span class="n">any</span><span class="p">():</span>
+            <span class="k">return</span> <span class="n">expected</span>
+        <span class="n">values</span> <span class="o">=</span> <span class="n">residual</span><span class="p">[</span><span class="n">row</span><span class="p">][</span><span class="n">window</span><span class="p">]</span>
+        <span class="n">coords</span> <span class="o">=</span> <span class="n">spat</span><span class="p">[</span><span class="n">row</span><span class="p">][</span><span class="n">window</span><span class="p">]</span>
+        <span class="n">total</span> <span class="o">=</span> <span class="n">values</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span>
+        <span class="k">if</span> <span class="n">total</span> <span class="o">&lt;=</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">expected</span>
+        <span class="n">centroid</span> <span class="o">=</span> <span class="nb">float</span><span class="p">((</span><span class="n">coords</span> <span class="o">*</span> <span class="n">values</span><span class="p">)</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span> <span class="o">/</span> <span class="n">total</span><span class="p">)</span>
+        <span class="k">return</span> <span class="nb">float</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">clip</span><span class="p">(</span><span class="n">centroid</span><span class="p">,</span> <span class="n">expected</span> <span class="o">-</span> <span class="n">maxshift</span><span class="p">,</span> <span class="n">expected</span> <span class="o">+</span> <span class="n">maxshift</span><span class="p">))</span>
+
+    <span class="n">expected</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">spat</span><span class="p">[</span><span class="n">ref_row</span><span class="p">,</span> <span class="n">peak_index</span><span class="p">])</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">expected</span><span class="p">):</span>
+        <span class="n">expected</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">nanmedian</span><span class="p">(</span><span class="n">spat</span><span class="p">[</span><span class="n">ref_row</span><span class="p">]))</span>
+    <span class="n">positions</span><span class="p">[</span><span class="n">ref_row</span><span class="p">]</span> <span class="o">=</span> <span class="n">_step</span><span class="p">(</span><span class="n">ref_row</span><span class="p">,</span> <span class="n">expected</span><span class="p">)</span>
+    <span class="n">previous</span> <span class="o">=</span> <span class="n">positions</span><span class="p">[</span><span class="n">ref_row</span><span class="p">]</span>
+    <span class="k">for</span> <span class="n">row</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">ref_row</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">nspec</span><span class="p">):</span>
+        <span class="n">expected</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">spat</span><span class="p">[</span><span class="n">row</span><span class="p">,</span> <span class="n">peak_index</span><span class="p">])</span> <span class="k">if</span> <span class="n">peak_index</span> <span class="o">&lt;</span> <span class="n">spat</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="k">else</span> <span class="n">previous</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">expected</span><span class="p">):</span>
+            <span class="n">expected</span> <span class="o">=</span> <span class="n">previous</span>
+        <span class="n">previous</span> <span class="o">=</span> <span class="n">_step</span><span class="p">(</span><span class="n">row</span><span class="p">,</span> <span class="n">expected</span><span class="p">)</span>
+        <span class="n">positions</span><span class="p">[</span><span class="n">row</span><span class="p">]</span> <span class="o">=</span> <span class="n">previous</span>
+    <span class="n">previous</span> <span class="o">=</span> <span class="n">positions</span><span class="p">[</span><span class="n">ref_row</span><span class="p">]</span>
+    <span class="k">for</span> <span class="n">row</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">ref_row</span> <span class="o">-</span> <span class="mi">1</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">):</span>
+        <span class="n">expected</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">spat</span><span class="p">[</span><span class="n">row</span><span class="p">,</span> <span class="n">peak_index</span><span class="p">])</span> <span class="k">if</span> <span class="n">peak_index</span> <span class="o">&lt;</span> <span class="n">spat</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="k">else</span> <span class="n">previous</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">expected</span><span class="p">):</span>
+            <span class="n">expected</span> <span class="o">=</span> <span class="n">previous</span>
+        <span class="n">previous</span> <span class="o">=</span> <span class="n">_step</span><span class="p">(</span><span class="n">row</span><span class="p">,</span> <span class="n">expected</span><span class="p">)</span>
+        <span class="n">positions</span><span class="p">[</span><span class="n">row</span><span class="p">]</span> <span class="o">=</span> <span class="n">previous</span>
+
+    <span class="n">xmid</span><span class="p">,</span> <span class="n">xscale</span> <span class="o">=</span> <span class="n">trace_coordinate</span><span class="p">(</span><span class="n">nspec</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">positions</span><span class="p">,</span> <span class="n">xmid</span><span class="p">,</span> <span class="n">xscale</span>
+</pre></div>
+</div></details>
+</main>
+<script defer src="static/katex/katex.min.js"></script>
+<script defer src="static/katex/auto-render.min.js"></script>
+<script defer src="static/guide.js"></script>
+</body>
+</html>

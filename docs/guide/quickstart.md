@@ -41,6 +41,13 @@ finishes it reports the last step reached.
 
 {{figure: quickstart/reduce-output "Terminal output of a full onfire reduce run"}}
 
+> **Known limits of a plain command-line run.** Two inputs are required by later steps but are not produced by any earlier step yet:
+>
+> - `flux_calibrate` needs an extracted standard-star spectrum (`standard_flux`). The standard-star exposures are loaded, but not extracted. See [flux_calibrate](flux_calibrate.html).
+> - `extinction_correct` needs either an `ebv` value in the Parameter Config, or a `dust_map` table in the state. Set `ebv` for a command-line run. See [extinction_correct](extinction_correct.html).
+>
+> Until this changes, a full run stops at `flux_calibrate` unless you supply `standard_flux` from Python (use `--until extract_1d` and then continue interactively).
+
 ### Stopping and resuming
 
 ```bash

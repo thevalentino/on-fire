@@ -1,0 +1,506 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>flux_calibrate - onfire</title>
+<link rel="stylesheet" href="static/katex/katex.min.css">
+<link rel="stylesheet" href="static/pygments.css">
+<link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+<nav class="sidebar">
+<a class="brand" href="index.html">onfire</a>
+<ul><li><a href="index.html">Overview</a></li><li><a href="quickstart.html">Quickstart</a></li><li><a href="frame-table.html">Frame Table</a></li><li><a href="parameter-config.html">Parameter Config</a></li><li><a href="interactive.html">Interactive analysis</a></li></ul>
+<div class="group">Reduction steps</div><ul><li><a href="prep_calibrations.html">prep_calibrations</a></li><li><a href="trace_orders.html">trace_orders</a></li><li><a href="calibrate_wavelengths.html">calibrate_wavelengths</a></li><li><a href="fit_tilts.html">fit_tilts</a></li><li><a href="process_science.html">process_science</a></li><li><a href="find_objects.html">find_objects</a></li><li><a href="subtract_sky.html">subtract_sky</a></li><li><a href="extract_1d.html">extract_1d</a></li><li><a href="flux_calibrate.html" aria-current="page">flux_calibrate</a></li><li><a href="telluric_correct.html">telluric_correct</a></li><li><a href="coadd_orders.html">coadd_orders</a></li><li><a href="extinction_correct.html">extinction_correct</a></li></ul>
+</nav>
+<main>
+<h1>flux_calibrate</h1>
+<p class="purpose">Use an observed standard star of known spectrum to derive a sensitivity function for each order, and apply it to turn extracted counts into flux density.</p>
+<section><h2>Inputs and outputs</h2><p><strong>Reads</strong></p>
+<ul>
+<li><code>wave_soln</code> from <code>calibrate_wavelengths</code>.</li>
+<li><code>objects</code> from <code>find_objects</code>, and the extracted spectra from <code>extract_1d</code>: <code>opt_flux</code> and <code>opt_var</code> if present, otherwise <code>boxcar_flux</code> and <code>boxcar_var</code>.</li>
+<li><code>standard_flux</code>: the <strong>extracted standard-star spectrum</strong>, shape <code>(nspec, 21)</code> with one column per order, in counts. Optionally <code>standard_var</code> with the same shape.</li>
+<li>Optionally <code>standard_template</code>, a table with <code>wave</code> and <code>flux</code> columns giving the standard's true spectrum. Without it the bundled A0V (Vega) template is used, or the file in <code>a0v_path</code>.</li>
+<li>Frame Table role loaded for this step: <code>standard</code>.</li>
+</ul>
+<blockquote>
+<p><strong>Note:</strong> the <code>standard_flux</code> product is not produced by any earlier step. The runner loads the standard-star exposures as <code>raw_standard</code>, but nothing in the pipeline currently extracts them into <code>standard_flux</code>. Until that exists, put your own extracted standard spectrum into the state before running this step, for example <code>state.products["standard_flux"] = counts</code>. The tests do exactly this.</p>
+</blockquote>
+<p><strong>Writes</strong></p>
+<p>| Product | Contents |
+|---------|----------|
+| <code>sensfunc</code> | Table with one row per order: <code>npoints</code>, <code>rms</code>, <code>wave_min</code>, <code>wave_max</code>, <code>coeff</code> and <code>masked</code>. |
+| <code>sensitivity</code> | The conversion factor at every pixel, shape <code>(nspec, 21)</code>. |
+| <code>standard_fluxed</code> | The standard star after calibration, for checking against <code>standard_true</code>. |
+| <code>standard_true</code> | The true spectrum of the standard on each order's wavelength grid. |
+| <code>flux</code>, <code>flux_var</code>, <code>flux_ivar</code>, <code>flux_mask</code> | The calibrated science spectra, with one column per object like the <code>extract_1d</code> matrices. |</p>
+<p>An order is masked with the reason <code>no standard star spectrum</code> or <code>sensitivity fit failed</code>. Objects in a masked order get no calibrated flux.</p>
+<p><strong>QA Artifacts:</strong> <code>sensitivity</code> and <code>flux_calibration</code>.</p></section>
+<section><h2>How to call it</h2><p><strong>Command line</strong></p>
+<div class="codehilite"><pre><span></span><code>onfire<span class="w"> </span>reduce<span class="w"> </span>config.yaml<span class="w"> </span>--until<span class="w"> </span>flux_calibrate
+</code></pre></div>
+
+<p><strong>Parameter Config</strong></p>
+<div class="codehilite"><pre><span></span><code><span class="nt">steps</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">flux_calibrate</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">standard_exptime</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">60.0</span><span class="w">   </span><span class="c1"># exposure time of the standard, seconds (default 1.0)</span>
+<span class="w">    </span><span class="nt">science_exptime</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">900.0</span><span class="w">   </span><span class="c1"># exposure time of the science frames, seconds (default 1.0)</span>
+<span class="w">    </span><span class="nt">sensfunc_order</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5</span><span class="w">        </span><span class="c1"># degree of the sensitivity polynomial per order (default 5)</span>
+<span class="w">    </span><span class="nt">sensfunc_niter</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8</span><span class="w">        </span><span class="c1"># rejection iterations (default 8)</span>
+<span class="w">    </span><span class="nt">sensfunc_sigrej</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3.0</span><span class="w">     </span><span class="c1"># rejection threshold in robust sigma (default 3.0)</span>
+<span class="w">    </span><span class="c1"># a0v_path: my_vega.fits # replace the bundled A0V template</span>
+</code></pre></div>
+
+<p>The exposure times are <strong>not</strong> read from the Frame Table or the FITS headers. If you leave them at the default of 1.0 second, the calibrated fluxes are off by the ratio of the real times.</p>
+<p><code>standard_airmass</code> (default 1.0) is accepted, but the engine does not give <code>derive_sensitivity</code> an extinction curve, so it currently has no effect on the result.</p>
+<p><strong>Python</strong>, on a State Clone:</p>
+<div class="codehilite"><pre><span></span><code><span class="n">clone</span> <span class="o">=</span> <span class="n">baseline</span><span class="o">.</span><span class="n">run_step</span><span class="p">(</span><span class="s2">"flux_calibrate"</span><span class="p">,</span> <span class="n">params</span><span class="o">=</span><span class="p">{</span><span class="s2">"sensfunc_order"</span><span class="p">:</span> <span class="mi">4</span><span class="p">},</span> <span class="n">clone</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="n">fig</span> <span class="o">=</span> <span class="n">baseline</span><span class="o">.</span><span class="n">compare</span><span class="p">(</span><span class="n">clone</span><span class="p">,</span> <span class="s2">"flux_calibrate"</span><span class="p">)</span>
+</code></pre></div>
+
+<p>This step always processes all orders. The engine does not read <code>order=</code>, so a targeted call would re-run every order anyway.</p></section>
+<section><h2>Figures</h2><figure class="pending"><div>figure pending: <code>flux_calibrate/sensitivity</code></div><figcaption>Sensitivity function of each order from the sensitivity QA Artifact</figcaption></figure>
+
+<figure class="pending"><div>figure pending: <code>flux_calibrate/calibrated-standard</code></div><figcaption>Calibrated standard star over its true spectrum</figcaption></figure></section>
+<details><summary>Numerical methods and idea</summary><p>A standard star has a known spectrum. Dividing what the instrument recorded by what the star really emits gives the instrument's response, and that response then converts any other spectrum from counts to flux.</p>
+<p><strong>1. Counts to a rate per Angstrom.</strong> On each order's wavelength grid,</p>
+<p>$$
+N_\lambda = \frac{\text{counts}}{t_\mathrm{exp}\,\Delta\lambda},
+$$</p>
+<p>where $\Delta\lambda$ is the absolute gradient of the wavelength solution at each pixel.</p>
+<p><strong>2. Zeropoint.</strong> The true flux $F_\lambda$ of the standard (the template interpolated onto the order's wavelengths) gives a per-pixel AB-style zeropoint,</p>
+<p>$$
+Z = -2.5 \log_{10}\!\left(\frac{\lambda^2 F_\lambda}{N_\lambda}\right) + Z_0,
+$$</p>
+<p>with $Z_0$ a unit-conversion constant fixed by the flux scale of $10^{-17}$ erg s$^{-1}$ cm$^{-2}$ Å$^{-1}$. Pixels with non-positive counts or ratios, non-finite values or no template coverage are left out.</p>
+<p><strong>3. Fit the sensitivity function.</strong> The zeropoints of each order are fit with a Legendre series of degree <code>sensfunc_order</code> against wavelength scaled to $[-1, 1]$, with iterative <code>sensfunc_sigrej</code>-sigma rejection for up to <code>sensfunc_niter</code> iterations.</p>
+<p><strong>4. Apply.</strong> For a science spectrum, the same rate $N_\lambda$ is formed with the science exposure time and multiplied by the conversion factor,</p>
+<p>$$
+F_\lambda = N_\lambda \,\frac{10^{-0.4\,(Z(\lambda) - Z_0)}}{\lambda^2},
+$$</p>
+<p>and the variance is scaled by the square of the whole linear factor, $\left(\text{factor} / (t_\mathrm{exp}\,\Delta\lambda)\right)^2$. A pixel is valid only where the factor is positive. The factor is zero where the fitted zeropoint falls outside 5 to 30.</p>
+<p><strong>To verify:</strong> the output flux unit. The engine docstring says erg s$^{-1}$ cm$^{-2}$ Å$^{-1}$, but the zeropoint constant is built with a $10^{-17}$ scale, so the numbers may carry that scale factor.</p></details>
+<details><summary>Where this happens in the code</summary><p>The Step Engine derives one sensitivity function per order and applies it to every object:</p>
+<div class="code-ref"><div class="code-label">onfire/core/engines.py:2352</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">flux_calibrate</span><span class="p">(</span>
+    <span class="n">products</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+    <span class="n">meta</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+    <span class="n">params</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">StepResult</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Derive and apply per-order sensitivity functions (reduction step 9).</span>
+
+<span class="sd">    A sensitivity function is derived for every order from an observed standard</span>
+<span class="sd">    star of known intrinsic flux and then applied to the extracted science</span>
+<span class="sd">    spectra, converting counts into flux density in erg/s/cm^2/Angstrom. The</span>
+<span class="sd">    standard-star true flux comes from the ``standard_true`` product when</span>
+<span class="sd">    present, otherwise from the bundled A0V (Vega) template.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        products: State products. Requires ``wave_soln``, ``objects``, and an</span>
+<span class="sd">            extracted spectra product (``opt_flux``/``opt_var`` or</span>
+<span class="sd">            ``boxcar_flux``/``boxcar_var``) plus ``standard_flux``.</span>
+<span class="sd">        meta: State metadata (unused).</span>
+<span class="sd">        params: Algorithmic parameters, including ``sensfunc_order`` and the</span>
+<span class="sd">            standard/science exposure times.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        A :class:`StepResult` with the per-order ``sensfunc`` table, the sampled</span>
+<span class="sd">        ``sensitivity`` factor, and the calibrated ``flux``/``flux_var``/</span>
+<span class="sd">        ``flux_ivar``/``flux_mask`` arrays, plus QA figures.</span>
+<span class="sd">    """</span>
+    <span class="n">wave_soln</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"wave_soln"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">wave_soln</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="s2">"flux_calibrate requires a 'wave_soln' product; "</span>
+            <span class="s2">"run calibrate_wavelengths first"</span>
+        <span class="p">)</span>
+    <span class="n">objects</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"objects"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">objects</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="s2">"flux_calibrate requires an 'objects' product; run find_objects first"</span>
+        <span class="p">)</span>
+    <span class="n">standard_counts</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"standard_flux"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">standard_counts</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="s2">"flux_calibrate requires a 'standard_flux' product; "</span>
+            <span class="s2">"extract the spectrophotometric standard star first"</span>
+        <span class="p">)</span>
+
+    <span class="n">wave_soln</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">wave_soln</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">nspec</span> <span class="o">=</span> <span class="n">wave_soln</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+    <span class="n">standard_counts</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">standard_counts</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">standard_counts</span><span class="o">.</span><span class="n">ndim</span> <span class="o">!=</span> <span class="mi">2</span> <span class="ow">or</span> <span class="n">standard_counts</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="o">!=</span> <span class="n">FIRE_NORDERS</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="s2">"standard_flux must have shape (nspec, norders), "</span>
+            <span class="sa">f</span><span class="s2">"got </span><span class="si">{</span><span class="n">standard_counts</span><span class="o">.</span><span class="n">shape</span><span class="si">}</span><span class="s2">"</span>
+        <span class="p">)</span>
+    <span class="n">standard_var</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"standard_var"</span><span class="p">)</span>
+    <span class="n">standard_var</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">standard_var</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span> <span class="k">if</span> <span class="n">standard_var</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="kc">None</span>
+    <span class="p">)</span>
+
+    <span class="n">counts</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"opt_flux"</span><span class="p">)</span>
+    <span class="n">counts_var</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"opt_var"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">counts</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">counts</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"boxcar_flux"</span><span class="p">)</span>
+        <span class="n">counts_var</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"boxcar_var"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">counts</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="s2">"flux_calibrate requires an extracted spectra product "</span>
+            <span class="s2">"('opt_flux' or 'boxcar_flux'); run extract_1d first"</span>
+        <span class="p">)</span>
+    <span class="n">counts</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">counts</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">counts_var</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">counts_var</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span> <span class="k">if</span> <span class="n">counts_var</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="kc">None</span>
+    <span class="p">)</span>
+
+    <span class="n">sensfunc_order</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"sensfunc_order"</span><span class="p">,</span> <span class="mi">5</span><span class="p">))</span>
+    <span class="n">standard_exptime</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"standard_exptime"</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">))</span>
+    <span class="n">science_exptime</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"science_exptime"</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">))</span>
+    <span class="n">standard_airmass</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"standard_airmass"</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">))</span>
+    <span class="n">niter</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"sensfunc_niter"</span><span class="p">,</span> <span class="mi">8</span><span class="p">))</span>
+    <span class="n">sigrej</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"sensfunc_sigrej"</span><span class="p">,</span> <span class="mf">3.0</span><span class="p">))</span>
+
+    <span class="n">template_wave</span><span class="p">,</span> <span class="n">template_flux</span> <span class="o">=</span> <span class="n">_standard_template</span><span class="p">(</span><span class="n">products</span><span class="p">,</span> <span class="n">params</span><span class="p">)</span>
+    <span class="n">table</span> <span class="o">=</span> <span class="n">_blank_sensfunc_table</span><span class="p">(</span><span class="n">sensfunc_order</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span>
+    <span class="n">sensitivity</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">full</span><span class="p">((</span><span class="n">nspec</span><span class="p">,</span> <span class="n">FIRE_NORDERS</span><span class="p">),</span> <span class="n">np</span><span class="o">.</span><span class="n">nan</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">standard_fluxed</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">full</span><span class="p">((</span><span class="n">nspec</span><span class="p">,</span> <span class="n">FIRE_NORDERS</span><span class="p">),</span> <span class="n">np</span><span class="o">.</span><span class="n">nan</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">standard_true</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">full</span><span class="p">((</span><span class="n">nspec</span><span class="p">,</span> <span class="n">FIRE_NORDERS</span><span class="p">),</span> <span class="n">np</span><span class="o">.</span><span class="n">nan</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">sensfuncs</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
+    <span class="n">masked_orders</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
+
+    <span class="k">for</span> <span class="n">index</span><span class="p">,</span> <span class="n">order</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">FIRE_ORDER_NUMBERS</span><span class="p">):</span>
+        <span class="n">wave</span> <span class="o">=</span> <span class="n">wave_soln</span><span class="p">[:,</span> <span class="n">index</span><span class="p">]</span>
+        <span class="n">observed</span> <span class="o">=</span> <span class="n">standard_counts</span><span class="p">[:,</span> <span class="n">index</span><span class="p">]</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">np</span><span class="o">.</span><span class="n">any</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">wave</span><span class="p">))</span> <span class="ow">or</span> <span class="ow">not</span> <span class="n">np</span><span class="o">.</span><span class="n">any</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">observed</span><span class="p">)):</span>
+            <span class="n">table</span><span class="p">[</span><span class="s2">"masked"</span><span class="p">][</span><span class="n">index</span><span class="p">]</span> <span class="o">=</span> <span class="kc">True</span>
+            <span class="n">masked_orders</span><span class="p">[</span><span class="nb">int</span><span class="p">(</span><span class="n">order</span><span class="p">)]</span> <span class="o">=</span> <span class="s2">"no standard star spectrum"</span>
+            <span class="k">continue</span>
+        <span class="n">true_flux</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">interp</span><span class="p">(</span>
+            <span class="n">wave</span><span class="p">,</span> <span class="n">template_wave</span><span class="p">,</span> <span class="n">template_flux</span><span class="p">,</span> <span class="n">left</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">nan</span><span class="p">,</span> <span class="n">right</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">nan</span>
+        <span class="p">)</span>
+        <span class="n">gpm</span> <span class="o">=</span> <span class="p">(</span>
+            <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">wave</span><span class="p">)</span>
+            <span class="o">&amp;</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">observed</span><span class="p">)</span>
+            <span class="o">&amp;</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">true_flux</span><span class="p">)</span>
+            <span class="o">&amp;</span> <span class="p">(</span><span class="n">true_flux</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">)</span>
+        <span class="p">)</span>
+        <span class="n">sampling</span> <span class="o">=</span> <span class="n">delta_wave</span><span class="p">(</span><span class="n">wave</span><span class="p">)</span>
+        <span class="n">sensfunc</span> <span class="o">=</span> <span class="n">derive_sensitivity</span><span class="p">(</span>
+            <span class="n">wave</span><span class="p">,</span>
+            <span class="n">observed</span><span class="p">,</span>
+            <span class="n">true_flux</span><span class="p">,</span>
+            <span class="n">exptime</span><span class="o">=</span><span class="n">standard_exptime</span><span class="p">,</span>
+            <span class="n">counts_ivar</span><span class="o">=</span><span class="p">(</span>
+                <span class="kc">None</span>
+                <span class="k">if</span> <span class="n">standard_var</span> <span class="ow">is</span> <span class="kc">None</span>
+                <span class="k">else</span> <span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">standard_var</span><span class="p">[:,</span> <span class="n">index</span><span class="p">]</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">,</span> <span class="mf">1.0</span> <span class="o">/</span> <span class="n">standard_var</span><span class="p">[:,</span> <span class="n">index</span><span class="p">],</span> <span class="mf">0.0</span><span class="p">)</span>
+            <span class="p">),</span>
+            <span class="n">sampling</span><span class="o">=</span><span class="n">sampling</span><span class="p">,</span>
+            <span class="n">airmass</span><span class="o">=</span><span class="n">standard_airmass</span><span class="p">,</span>
+            <span class="n">gpm</span><span class="o">=</span><span class="n">gpm</span><span class="p">,</span>
+            <span class="n">order</span><span class="o">=</span><span class="n">sensfunc_order</span><span class="p">,</span>
+            <span class="n">niter</span><span class="o">=</span><span class="n">niter</span><span class="p">,</span>
+            <span class="n">sigrej</span><span class="o">=</span><span class="n">sigrej</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">np</span><span class="o">.</span><span class="n">all</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">sensfunc</span><span class="o">.</span><span class="n">coeffs</span><span class="p">)):</span>
+            <span class="n">table</span><span class="p">[</span><span class="s2">"masked"</span><span class="p">][</span><span class="n">index</span><span class="p">]</span> <span class="o">=</span> <span class="kc">True</span>
+            <span class="n">masked_orders</span><span class="p">[</span><span class="nb">int</span><span class="p">(</span><span class="n">order</span><span class="p">)]</span> <span class="o">=</span> <span class="s2">"sensitivity fit failed"</span>
+            <span class="k">continue</span>
+        <span class="n">sensfuncs</span><span class="p">[</span><span class="nb">int</span><span class="p">(</span><span class="n">order</span><span class="p">)]</span> <span class="o">=</span> <span class="n">sensfunc</span>
+        <span class="n">factor</span> <span class="o">=</span> <span class="n">sensfunc</span><span class="o">.</span><span class="n">factor</span><span class="p">(</span><span class="n">wave</span><span class="p">)</span>
+        <span class="n">sensitivity</span><span class="p">[:,</span> <span class="n">index</span><span class="p">]</span> <span class="o">=</span> <span class="n">factor</span>
+        <span class="n">standard_fluxed</span><span class="p">[:,</span> <span class="n">index</span><span class="p">]</span> <span class="o">=</span> <span class="n">apply_sensitivity</span><span class="p">(</span>
+            <span class="n">sensfunc</span><span class="p">,</span> <span class="n">wave</span><span class="p">,</span> <span class="n">observed</span><span class="p">,</span> <span class="n">exptime</span><span class="o">=</span><span class="n">standard_exptime</span><span class="p">,</span> <span class="n">sampling</span><span class="o">=</span><span class="n">sampling</span>
+        <span class="p">)[</span><span class="mi">0</span><span class="p">]</span>
+        <span class="n">standard_true</span><span class="p">[:,</span> <span class="n">index</span><span class="p">]</span> <span class="o">=</span> <span class="n">true_flux</span>
+        <span class="n">table</span><span class="p">[</span><span class="s2">"npoints"</span><span class="p">][</span><span class="n">index</span><span class="p">]</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">gpm</span><span class="o">.</span><span class="n">sum</span><span class="p">())</span>
+        <span class="n">table</span><span class="p">[</span><span class="s2">"rms"</span><span class="p">][</span><span class="n">index</span><span class="p">]</span> <span class="o">=</span> <span class="n">sensfunc</span><span class="o">.</span><span class="n">rms</span>
+        <span class="n">table</span><span class="p">[</span><span class="s2">"wave_min"</span><span class="p">][</span><span class="n">index</span><span class="p">]</span> <span class="o">=</span> <span class="n">sensfunc</span><span class="o">.</span><span class="n">wave_min</span>
+        <span class="n">table</span><span class="p">[</span><span class="s2">"wave_max"</span><span class="p">][</span><span class="n">index</span><span class="p">]</span> <span class="o">=</span> <span class="n">sensfunc</span><span class="o">.</span><span class="n">wave_max</span>
+        <span class="n">table</span><span class="p">[</span><span class="s2">"coeff"</span><span class="p">][</span><span class="n">index</span><span class="p">,</span> <span class="p">:</span> <span class="n">sensfunc</span><span class="o">.</span><span class="n">coeffs</span><span class="o">.</span><span class="n">size</span><span class="p">]</span> <span class="o">=</span> <span class="n">sensfunc</span><span class="o">.</span><span class="n">coeffs</span>
+        <span class="n">table</span><span class="p">[</span><span class="s2">"masked"</span><span class="p">][</span><span class="n">index</span><span class="p">]</span> <span class="o">=</span> <span class="kc">False</span>
+
+    <span class="n">orders</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">objects</span><span class="p">[</span><span class="s2">"order"</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">int</span><span class="p">)</span>
+    <span class="n">obj_ids</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">objects</span><span class="p">[</span><span class="s2">"obj_id"</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">int</span><span class="p">)</span>
+    <span class="n">flux</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">full_like</span><span class="p">(</span><span class="n">counts</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">nan</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">flux_var</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">full_like</span><span class="p">(</span><span class="n">counts</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">nan</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">flux_ivar</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros_like</span><span class="p">(</span><span class="n">counts</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">flux_mask</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">counts</span><span class="o">.</span><span class="n">shape</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">bool</span><span class="p">)</span>
+    <span class="n">n_objects</span> <span class="o">=</span> <span class="mi">0</span>
+    <span class="k">for</span> <span class="n">j</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">counts</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">1</span><span class="p">]):</span>
+        <span class="n">match</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">FIRE_ORDER_NUMBERS</span> <span class="o">==</span> <span class="nb">int</span><span class="p">(</span><span class="n">orders</span><span class="p">[</span><span class="n">j</span><span class="p">]))[</span><span class="mi">0</span><span class="p">]</span>
+        <span class="k">if</span> <span class="n">match</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="k">continue</span>
+        <span class="n">index</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">match</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
+        <span class="n">sensfunc</span> <span class="o">=</span> <span class="n">sensfuncs</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="nb">int</span><span class="p">(</span><span class="n">orders</span><span class="p">[</span><span class="n">j</span><span class="p">]))</span>
+        <span class="k">if</span> <span class="n">sensfunc</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">continue</span>
+        <span class="n">wave</span> <span class="o">=</span> <span class="n">wave_soln</span><span class="p">[:,</span> <span class="n">index</span><span class="p">]</span>
+        <span class="n">sampling</span> <span class="o">=</span> <span class="n">delta_wave</span><span class="p">(</span><span class="n">wave</span><span class="p">)</span>
+        <span class="n">obj_flux</span><span class="p">,</span> <span class="n">obj_var</span><span class="p">,</span> <span class="n">obj_ivar</span><span class="p">,</span> <span class="n">obj_mask</span> <span class="o">=</span> <span class="n">apply_sensitivity</span><span class="p">(</span>
+            <span class="n">sensfunc</span><span class="p">,</span>
+            <span class="n">wave</span><span class="p">,</span>
+            <span class="n">counts</span><span class="p">[:,</span> <span class="n">j</span><span class="p">],</span>
+            <span class="n">exptime</span><span class="o">=</span><span class="n">science_exptime</span><span class="p">,</span>
+            <span class="n">counts_var</span><span class="o">=</span><span class="kc">None</span> <span class="k">if</span> <span class="n">counts_var</span> <span class="ow">is</span> <span class="kc">None</span> <span class="k">else</span> <span class="n">counts_var</span><span class="p">[:,</span> <span class="n">j</span><span class="p">],</span>
+            <span class="n">sampling</span><span class="o">=</span><span class="n">sampling</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="n">flux</span><span class="p">[:,</span> <span class="n">j</span><span class="p">]</span> <span class="o">=</span> <span class="n">obj_flux</span>
+        <span class="k">if</span> <span class="n">obj_var</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">flux_var</span><span class="p">[:,</span> <span class="n">j</span><span class="p">]</span> <span class="o">=</span> <span class="n">obj_var</span>
+            <span class="n">flux_ivar</span><span class="p">[:,</span> <span class="n">j</span><span class="p">]</span> <span class="o">=</span> <span class="n">obj_ivar</span>
+        <span class="n">flux_mask</span><span class="p">[:,</span> <span class="n">j</span><span class="p">]</span> <span class="o">=</span> <span class="n">obj_mask</span>
+        <span class="k">if</span> <span class="n">obj_mask</span><span class="o">.</span><span class="n">any</span><span class="p">():</span>
+            <span class="n">n_objects</span> <span class="o">+=</span> <span class="mi">1</span>
+
+    <span class="n">n_masked</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">table</span><span class="p">[</span><span class="s2">"masked"</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">bool</span><span class="p">)</span><span class="o">.</span><span class="n">sum</span><span class="p">())</span>
+    <span class="n">sensitivity_figure</span> <span class="o">=</span> <span class="n">_sensitivity_figure</span><span class="p">(</span><span class="n">table</span><span class="p">,</span> <span class="n">sensitivity</span><span class="p">,</span> <span class="n">wave_soln</span><span class="p">)</span>
+    <span class="n">flux_figure</span> <span class="o">=</span> <span class="n">_flux_calibration_figure</span><span class="p">(</span>
+        <span class="n">wave_soln</span><span class="p">,</span> <span class="n">objects</span><span class="p">,</span> <span class="n">flux</span><span class="p">,</span> <span class="n">standard_fluxed</span>
+    <span class="p">)</span>
+
+    <span class="k">return</span> <span class="n">StepResult</span><span class="p">(</span>
+        <span class="n">products</span><span class="o">=</span><span class="p">{</span>
+            <span class="s2">"sensfunc"</span><span class="p">:</span> <span class="n">table</span><span class="p">,</span>
+            <span class="s2">"sensitivity"</span><span class="p">:</span> <span class="n">sensitivity</span><span class="p">,</span>
+            <span class="s2">"standard_flux"</span><span class="p">:</span> <span class="n">standard_counts</span><span class="p">,</span>
+            <span class="s2">"standard_fluxed"</span><span class="p">:</span> <span class="n">standard_fluxed</span><span class="p">,</span>
+            <span class="s2">"standard_true"</span><span class="p">:</span> <span class="n">standard_true</span><span class="p">,</span>
+            <span class="s2">"flux"</span><span class="p">:</span> <span class="n">flux</span><span class="p">,</span>
+            <span class="s2">"flux_var"</span><span class="p">:</span> <span class="n">flux_var</span><span class="p">,</span>
+            <span class="s2">"flux_ivar"</span><span class="p">:</span> <span class="n">flux_ivar</span><span class="p">,</span>
+            <span class="s2">"flux_mask"</span><span class="p">:</span> <span class="n">flux_mask</span><span class="p">,</span>
+        <span class="p">},</span>
+        <span class="n">meta</span><span class="o">=</span><span class="p">{</span>
+            <span class="s2">"n_orders_flux_calibrated"</span><span class="p">:</span> <span class="nb">int</span><span class="p">(</span><span class="n">FIRE_NORDERS</span> <span class="o">-</span> <span class="n">n_masked</span><span class="p">),</span>
+            <span class="s2">"n_orders_masked"</span><span class="p">:</span> <span class="n">n_masked</span><span class="p">,</span>
+            <span class="s2">"n_objects_flux_calibrated"</span><span class="p">:</span> <span class="n">n_objects</span><span class="p">,</span>
+            <span class="s2">"sensfunc_order"</span><span class="p">:</span> <span class="n">sensfunc_order</span><span class="p">,</span>
+        <span class="p">},</span>
+        <span class="n">plots</span><span class="o">=</span><span class="p">{</span><span class="s2">"sensitivity"</span><span class="p">:</span> <span class="n">sensitivity_figure</span><span class="p">,</span> <span class="s2">"flux_calibration"</span><span class="p">:</span> <span class="n">flux_figure</span><span class="p">},</span>
+        <span class="n">masked_orders</span><span class="o">=</span><span class="n">masked_orders</span><span class="p">,</span>
+    <span class="p">)</span>
+</pre></div>
+</div>
+<p>Choosing the standard's true spectrum:</p>
+<div class="code-ref"><div class="code-label">onfire/core/engines.py:2241</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">_standard_template</span><span class="p">(</span>
+    <span class="n">products</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span> <span class="n">params</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""Return the standard-star true flux ``(wave, flux)`` for calibration."""</span>
+    <span class="n">table</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"standard_template"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">table</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">return</span> <span class="p">(</span>
+            <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">table</span><span class="p">[</span><span class="s2">"wave"</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">),</span>
+            <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">table</span><span class="p">[</span><span class="s2">"flux"</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">),</span>
+        <span class="p">)</span>
+    <span class="kn">from</span><span class="w"> </span><span class="nn">onfire.data</span><span class="w"> </span><span class="kn">import</span> <span class="n">load_a0v_template</span>
+
+    <span class="n">template</span> <span class="o">=</span> <span class="n">load_a0v_template</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"a0v_path"</span><span class="p">))</span>
+    <span class="k">return</span> <span class="p">(</span>
+        <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">template</span><span class="p">[</span><span class="s2">"wave"</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">),</span>
+        <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">template</span><span class="p">[</span><span class="s2">"flux"</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">),</span>
+    <span class="p">)</span>
+</pre></div>
+</div>
+<p>The pure array algorithms in <code>onfire/core/flux.py</code>:</p>
+<div class="code-ref"><div class="code-label">onfire/core/flux.py:71</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">counts_to_nlam</span><span class="p">(</span>
+    <span class="n">wave</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">counts</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">exptime</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">counts_ivar</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">sampling</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">extinction</span><span class="p">:</span> <span class="nb">object</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">airmass</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1.0</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span> <span class="o">|</span> <span class="kc">None</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""Convert counts to a count rate per Angstrom ``N_lam``.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        wave: Wavelength grid in Angstroms, shape ``(nspec,)``.</span>
+<span class="sd">        counts: Observed counts, shape ``(nspec,)``.</span>
+<span class="sd">        exptime: Exposure time in seconds.</span>
+<span class="sd">        counts_ivar: Optional inverse variance of ``counts``.</span>
+<span class="sd">        sampling: Optional wavelength sampling ``dlambda``; defaults to the</span>
+<span class="sd">            grid gradient.</span>
+<span class="sd">        extinction: Optional atmospheric extinction coefficient array or a</span>
+<span class="sd">            callable ``k(wave)`` returned in magnitudes per airmass.</span>
+<span class="sd">        airmass: Airmass at which the observation was taken.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        ``(nlam, nlam_ivar)`` where ``nlam`` is in counts/s/Angstrom and</span>
+<span class="sd">        ``nlam_ivar`` is ``None`` when ``counts_ivar`` was not supplied.</span>
+<span class="sd">    """</span>
+    <span class="n">wave</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">wave</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">counts</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">counts</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">dw</span> <span class="o">=</span> <span class="n">delta_wave</span><span class="p">(</span><span class="n">wave</span><span class="p">)</span> <span class="k">if</span> <span class="n">sampling</span> <span class="ow">is</span> <span class="kc">None</span> <span class="k">else</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">sampling</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">exptime</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">exptime</span><span class="p">)</span>
+
+    <span class="k">with</span> <span class="n">np</span><span class="o">.</span><span class="n">errstate</span><span class="p">(</span><span class="n">invalid</span><span class="o">=</span><span class="s2">"ignore"</span><span class="p">,</span> <span class="n">divide</span><span class="o">=</span><span class="s2">"ignore"</span><span class="p">):</span>
+        <span class="n">nlam</span> <span class="o">=</span> <span class="n">counts</span> <span class="o">/</span> <span class="n">exptime</span> <span class="o">/</span> <span class="n">dw</span>
+    <span class="n">nlam_ivar</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="k">if</span> <span class="n">counts_ivar</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">counts_ivar</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">counts_ivar</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+        <span class="n">nlam_ivar</span> <span class="o">=</span> <span class="n">dw</span><span class="o">**</span><span class="mi">2</span> <span class="o">*</span> <span class="n">counts_ivar</span> <span class="o">*</span> <span class="n">exptime</span><span class="o">**</span><span class="mi">2</span>
+
+    <span class="k">if</span> <span class="n">extinction</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">correction</span> <span class="o">=</span> <span class="n">_extinction_factor</span><span class="p">(</span><span class="n">extinction</span><span class="p">,</span> <span class="n">wave</span><span class="p">,</span> <span class="n">airmass</span><span class="p">)</span>
+        <span class="n">nlam</span> <span class="o">=</span> <span class="n">nlam</span> <span class="o">*</span> <span class="n">correction</span>
+        <span class="k">if</span> <span class="n">nlam_ivar</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">nlam_ivar</span> <span class="o">=</span> <span class="n">nlam_ivar</span> <span class="o">/</span> <span class="n">correction</span><span class="o">**</span><span class="mi">2</span>
+    <span class="k">return</span> <span class="n">nlam</span><span class="p">,</span> <span class="n">nlam_ivar</span>
+</pre></div>
+</div>
+<div class="code-ref"><div class="code-label">onfire/core/flux.py:142</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">compute_zeropoint</span><span class="p">(</span>
+    <span class="n">wave</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">nlam</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">standard_flux</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">gpm</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">telluric</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""Compute the spectroscopic zeropoint from a standard star.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        wave: Wavelength grid in Angstroms.</span>
+<span class="sd">        nlam: Observed count rate per Angstrom of the standard star.</span>
+<span class="sd">        standard_flux: True flux of the standard star in erg/s/cm^2/Angstrom.</span>
+<span class="sd">        gpm: Optional initial good-pixel mask.</span>
+<span class="sd">        telluric: Optional atmospheric transmission to remove from the standard.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        ``(zeropoint, good)`` with the per-pixel zeropoint and its good mask.</span>
+<span class="sd">    """</span>
+    <span class="n">wave</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">wave</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">nlam</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">nlam</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">standard_flux</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">standard_flux</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">transmission</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="n">np</span><span class="o">.</span><span class="n">ones_like</span><span class="p">(</span><span class="n">wave</span><span class="p">)</span> <span class="k">if</span> <span class="n">telluric</span> <span class="ow">is</span> <span class="kc">None</span> <span class="k">else</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">telluric</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="p">)</span>
+
+    <span class="k">with</span> <span class="n">np</span><span class="o">.</span><span class="n">errstate</span><span class="p">(</span><span class="n">invalid</span><span class="o">=</span><span class="s2">"ignore"</span><span class="p">,</span> <span class="n">divide</span><span class="o">=</span><span class="s2">"ignore"</span><span class="p">):</span>
+        <span class="n">ratio</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">square</span><span class="p">(</span><span class="n">wave</span><span class="p">)</span> <span class="o">*</span> <span class="n">transmission</span> <span class="o">*</span> <span class="n">standard_flux</span> <span class="o">/</span> <span class="n">nlam</span>
+        <span class="n">zeropoint</span> <span class="o">=</span> <span class="o">-</span><span class="mf">2.5</span> <span class="o">*</span> <span class="n">np</span><span class="o">.</span><span class="n">log10</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">ratio</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">,</span> <span class="n">ratio</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">))</span> <span class="o">+</span> <span class="n">ZP_UNIT_CONST</span>
+
+    <span class="n">good</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="p">(</span><span class="n">wave</span> <span class="o">&gt;</span> <span class="mf">1.0</span><span class="p">)</span>
+        <span class="o">&amp;</span> <span class="p">(</span><span class="n">nlam</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">)</span>
+        <span class="o">&amp;</span> <span class="p">(</span><span class="n">ratio</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">)</span>
+        <span class="o">&amp;</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">standard_flux</span><span class="p">)</span>
+        <span class="o">&amp;</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">zeropoint</span><span class="p">)</span>
+    <span class="p">)</span>
+    <span class="k">if</span> <span class="n">gpm</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">good</span> <span class="o">&amp;=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">gpm</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">bool</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">zeropoint</span><span class="p">,</span> <span class="n">good</span>
+</pre></div>
+</div>
+<div class="code-ref"><div class="code-label">onfire/core/flux.py:223</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">fit_sensitivity_function</span><span class="p">(</span>
+    <span class="n">wave</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">zeropoint</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">gpm</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">order</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">5</span><span class="p">,</span>
+    <span class="n">niter</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">8</span><span class="p">,</span>
+    <span class="n">sigrej</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">3.0</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">SensitivityFunction</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Fit a smooth sensitivity function to per-pixel zeropoints.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        wave: Wavelength grid in Angstroms.</span>
+<span class="sd">        zeropoint: Per-pixel spectroscopic zeropoint.</span>
+<span class="sd">        gpm: Optional good-pixel mask.</span>
+<span class="sd">        order: Legendre polynomial degree.</span>
+<span class="sd">        niter: Maximum robust-rejection iterations.</span>
+<span class="sd">        sigrej: Rejection threshold in robust sigma.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        The fitted :class:`SensitivityFunction`.</span>
+<span class="sd">    """</span>
+    <span class="n">wave</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">wave</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">zeropoint</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">zeropoint</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">good</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">wave</span><span class="p">)</span> <span class="o">&amp;</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">zeropoint</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">gpm</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">good</span> <span class="o">&amp;=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">gpm</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">bool</span><span class="p">)</span>
+
+    <span class="n">finite_wave</span> <span class="o">=</span> <span class="n">wave</span><span class="p">[</span><span class="n">good</span><span class="p">]</span>
+    <span class="k">if</span> <span class="n">finite_wave</span><span class="o">.</span><span class="n">size</span><span class="p">:</span>
+        <span class="n">wave_min</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">finite_wave</span><span class="o">.</span><span class="n">min</span><span class="p">())</span>
+        <span class="n">wave_max</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">finite_wave</span><span class="o">.</span><span class="n">max</span><span class="p">())</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">wave_min</span><span class="p">,</span> <span class="n">wave_max</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span>
+
+    <span class="n">fit</span><span class="p">,</span> <span class="n">_used</span><span class="p">,</span> <span class="n">rms</span> <span class="o">=</span> <span class="n">robust_legendre_fit</span><span class="p">(</span>
+        <span class="p">[</span><span class="n">wave</span><span class="p">],</span>
+        <span class="n">zeropoint</span><span class="p">,</span>
+        <span class="p">(</span><span class="nb">int</span><span class="p">(</span><span class="n">order</span><span class="p">),),</span>
+        <span class="n">in_gpm</span><span class="o">=</span><span class="n">good</span><span class="p">,</span>
+        <span class="n">niter</span><span class="o">=</span><span class="nb">int</span><span class="p">(</span><span class="n">niter</span><span class="p">),</span>
+        <span class="n">sigrej</span><span class="o">=</span><span class="nb">float</span><span class="p">(</span><span class="n">sigrej</span><span class="p">),</span>
+    <span class="p">)</span>
+    <span class="k">return</span> <span class="n">SensitivityFunction</span><span class="p">(</span>
+        <span class="n">wave_min</span><span class="o">=</span><span class="n">wave_min</span><span class="p">,</span>
+        <span class="n">wave_max</span><span class="o">=</span><span class="n">wave_max</span><span class="p">,</span>
+        <span class="n">coeffs</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">fit</span><span class="o">.</span><span class="n">coeffs</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">),</span>
+        <span class="n">order</span><span class="o">=</span><span class="nb">int</span><span class="p">(</span><span class="n">order</span><span class="p">),</span>
+        <span class="n">rms</span><span class="o">=</span><span class="nb">float</span><span class="p">(</span><span class="n">rms</span><span class="p">),</span>
+    <span class="p">)</span>
+</pre></div>
+</div>
+<div class="code-ref"><div class="code-label">onfire/core/flux.py:314</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">apply_sensitivity</span><span class="p">(</span>
+    <span class="n">sensfunc</span><span class="p">:</span> <span class="n">SensitivityFunction</span><span class="p">,</span>
+    <span class="n">wave</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">counts</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">exptime</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1.0</span><span class="p">,</span>
+    <span class="n">counts_var</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">sampling</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span> <span class="o">|</span> <span class="kc">None</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span> <span class="o">|</span> <span class="kc">None</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""Apply a sensitivity function to counts, returning flux density.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        sensfunc: The per-order sensitivity function.</span>
+<span class="sd">        wave: Wavelength grid in Angstroms.</span>
+<span class="sd">        counts: Observed counts.</span>
+<span class="sd">        exptime: Exposure time in seconds.</span>
+<span class="sd">        counts_var: Optional variance of ``counts`` for propagation.</span>
+<span class="sd">        sampling: Optional wavelength sampling ``dlambda``.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        ``(flux, flux_var, flux_ivar, mask)`` with flux in</span>
+<span class="sd">        erg/s/cm^2/Angstrom and the variance propagated through the linear</span>
+<span class="sd">        sensitivity and exposure-time scaling.</span>
+<span class="sd">    """</span>
+    <span class="n">wave</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">wave</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">counts</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">counts</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">dw</span> <span class="o">=</span> <span class="n">delta_wave</span><span class="p">(</span><span class="n">wave</span><span class="p">)</span> <span class="k">if</span> <span class="n">sampling</span> <span class="ow">is</span> <span class="kc">None</span> <span class="k">else</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">sampling</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">exptime</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">exptime</span><span class="p">)</span>
+    <span class="n">nlam</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">counts_to_nlam</span><span class="p">(</span>
+        <span class="n">wave</span><span class="p">,</span> <span class="n">counts</span><span class="p">,</span> <span class="n">exptime</span><span class="p">,</span> <span class="n">sampling</span><span class="o">=</span><span class="n">dw</span>
+    <span class="p">)</span>
+    <span class="n">zeropoint</span> <span class="o">=</span> <span class="n">sensfunc</span><span class="o">.</span><span class="n">evaluate_zeropoint</span><span class="p">(</span><span class="n">wave</span><span class="p">)</span>
+    <span class="n">factor</span> <span class="o">=</span> <span class="n">nlam_to_flam</span><span class="p">(</span><span class="n">wave</span><span class="p">,</span> <span class="n">zeropoint</span><span class="p">)</span>
+    <span class="n">flux</span> <span class="o">=</span> <span class="n">nlam</span> <span class="o">*</span> <span class="n">factor</span>
+    <span class="n">mask</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">flux</span><span class="p">)</span> <span class="o">&amp;</span> <span class="p">(</span><span class="n">factor</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">)</span>
+
+    <span class="k">if</span> <span class="n">counts_var</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">flux</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="n">mask</span>
+
+    <span class="c1"># flux = counts * factor / (exptime * dlambda), so the variance transforms</span>
+    <span class="c1"># by the square of that linear scaling.</span>
+    <span class="n">counts_var</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">counts_var</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="k">with</span> <span class="n">np</span><span class="o">.</span><span class="n">errstate</span><span class="p">(</span><span class="n">invalid</span><span class="o">=</span><span class="s2">"ignore"</span><span class="p">,</span> <span class="n">divide</span><span class="o">=</span><span class="s2">"ignore"</span><span class="p">):</span>
+        <span class="n">flux_var</span> <span class="o">=</span> <span class="n">counts_var</span> <span class="o">*</span> <span class="p">(</span><span class="n">factor</span> <span class="o">/</span> <span class="p">(</span><span class="n">exptime</span> <span class="o">*</span> <span class="n">dw</span><span class="p">))</span> <span class="o">**</span> <span class="mi">2</span>
+        <span class="n">flux_ivar</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">flux_var</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">,</span> <span class="mf">1.0</span> <span class="o">/</span> <span class="n">flux_var</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">)</span>
+    <span class="n">flux</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">mask</span><span class="p">,</span> <span class="n">flux</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">nan</span><span class="p">)</span>
+    <span class="n">flux_var</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">mask</span><span class="p">,</span> <span class="n">flux_var</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">nan</span><span class="p">)</span>
+    <span class="n">flux_ivar</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">mask</span><span class="p">,</span> <span class="n">flux_ivar</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">flux</span><span class="p">,</span> <span class="n">flux_var</span><span class="p">,</span> <span class="n">flux_ivar</span><span class="p">,</span> <span class="n">mask</span>
+</pre></div>
+</div></details>
+</main>
+<script defer src="static/katex/katex.min.js"></script>
+<script defer src="static/katex/auto-render.min.js"></script>
+<script defer src="static/guide.js"></script>
+</body>
+</html>

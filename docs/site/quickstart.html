@@ -12,7 +12,7 @@
 <nav class="sidebar">
 <a class="brand" href="index.html">onfire</a>
 <ul><li><a href="index.html">Overview</a></li><li><a href="quickstart.html" aria-current="page">Quickstart</a></li><li><a href="frame-table.html">Frame Table</a></li><li><a href="parameter-config.html">Parameter Config</a></li><li><a href="interactive.html">Interactive analysis</a></li></ul>
-<div class="group">Reduction steps</div><ul><li><span class="todo">prep_calibrations</span></li><li><a href="trace_orders.html">trace_orders</a></li><li><span class="todo">calibrate_wavelengths</span></li><li><span class="todo">fit_tilts</span></li><li><span class="todo">process_science</span></li><li><span class="todo">find_objects</span></li><li><span class="todo">subtract_sky</span></li><li><span class="todo">extract_1d</span></li><li><span class="todo">flux_calibrate</span></li><li><span class="todo">telluric_correct</span></li><li><span class="todo">coadd_orders</span></li><li><span class="todo">extinction_correct</span></li></ul>
+<div class="group">Reduction steps</div><ul><li><a href="prep_calibrations.html">prep_calibrations</a></li><li><a href="trace_orders.html">trace_orders</a></li><li><a href="calibrate_wavelengths.html">calibrate_wavelengths</a></li><li><a href="fit_tilts.html">fit_tilts</a></li><li><a href="process_science.html">process_science</a></li><li><a href="find_objects.html">find_objects</a></li><li><a href="subtract_sky.html">subtract_sky</a></li><li><a href="extract_1d.html">extract_1d</a></li><li><a href="flux_calibrate.html">flux_calibrate</a></li><li><a href="telluric_correct.html">telluric_correct</a></li><li><a href="coadd_orders.html">coadd_orders</a></li><li><a href="extinction_correct.html">extinction_correct</a></li></ul>
 </nav>
 <main>
 <h1>Quickstart</h1>
@@ -42,6 +42,14 @@ you pass <code>--overwrite</code>. Open the file and correct any roles it guesse
 finishes it reports the last step reached.</p>
 <figure class="pending"><div>figure pending: <code>quickstart/reduce-output</code></div><figcaption>Terminal output of a full onfire reduce run</figcaption></figure>
 
+<blockquote>
+<p><strong>Known limits of a plain command-line run.</strong> Two inputs are required by later steps but are not produced by any earlier step yet:</p>
+<ul>
+<li><code>flux_calibrate</code> needs an extracted standard-star spectrum (<code>standard_flux</code>). The standard-star exposures are loaded, but not extracted. See <a href="flux_calibrate.html">flux_calibrate</a>.</li>
+<li><code>extinction_correct</code> needs either an <code>ebv</code> value in the Parameter Config, or a <code>dust_map</code> table in the state. Set <code>ebv</code> for a command-line run. See <a href="extinction_correct.html">extinction_correct</a>.</li>
+</ul>
+<p>Until this changes, a full run stops at <code>flux_calibrate</code> unless you supply <code>standard_flux</code> from Python (use <code>--until extract_1d</code> and then continue interactively).</p>
+</blockquote>
 <h3>Stopping and resuming</h3>
 <div class="codehilite"><pre><span></span><code><span class="c1"># stop after the wavelength solution, then inspect the results</span>
 onfire<span class="w"> </span>reduce<span class="w"> </span>config.yaml<span class="w"> </span>--until<span class="w"> </span>calibrate_wavelengths

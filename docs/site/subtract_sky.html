@@ -1,0 +1,395 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>subtract_sky - onfire</title>
+<link rel="stylesheet" href="static/katex/katex.min.css">
+<link rel="stylesheet" href="static/pygments.css">
+<link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+<nav class="sidebar">
+<a class="brand" href="index.html">onfire</a>
+<ul><li><a href="index.html">Overview</a></li><li><a href="quickstart.html">Quickstart</a></li><li><a href="frame-table.html">Frame Table</a></li><li><a href="parameter-config.html">Parameter Config</a></li><li><a href="interactive.html">Interactive analysis</a></li></ul>
+<div class="group">Reduction steps</div><ul><li><a href="prep_calibrations.html">prep_calibrations</a></li><li><a href="trace_orders.html">trace_orders</a></li><li><a href="calibrate_wavelengths.html">calibrate_wavelengths</a></li><li><a href="fit_tilts.html">fit_tilts</a></li><li><a href="process_science.html">process_science</a></li><li><a href="find_objects.html">find_objects</a></li><li><a href="subtract_sky.html" aria-current="page">subtract_sky</a></li><li><a href="extract_1d.html">extract_1d</a></li><li><a href="flux_calibrate.html">flux_calibrate</a></li><li><a href="telluric_correct.html">telluric_correct</a></li><li><a href="coadd_orders.html">coadd_orders</a></li><li><a href="extinction_correct.html">extinction_correct</a></li></ul>
+</nav>
+<main>
+<h1>subtract_sky</h1>
+<p class="purpose">Model the two-dimensional sky background of each order, following the line tilt and avoiding the objects, and subtract it from the science image.</p>
+<section><h2>Inputs and outputs</h2><p><strong>Reads</strong></p>
+<ul>
+<li><code>science</code>, <code>science_ivar</code>, <code>science_var</code> and <code>science_mask</code> from <code>process_science</code>.</li>
+<li><code>order_traces</code> from <code>trace_orders</code>.</li>
+<li><code>tilt_coeffs</code> from <code>fit_tilts</code>. The tilt surface sizes are read from the metadata that step recorded.</li>
+<li><code>object_skymask</code>, <code>object_traces</code>, <code>object_orders</code> and <code>object_box_radii</code> from <code>find_objects</code>.</li>
+<li>No Frame Table role is loaded for this step.</li>
+</ul>
+<p><strong>Writes</strong></p>
+<p>| Product | Contents |
+|---------|----------|
+| <code>sky_model</code> | The fitted sky, same shape as the science image. |
+| <code>science_sky</code> | The science image minus the sky model. |
+| <code>science_sky_var</code> | Variance of <code>science_sky</code>: the science variance plus the scatter of the sky fit. |
+| <code>science_sky_ivar</code> | Inverse variance, <code>0</code> where the pixel is not usable. |
+| <code>sky_fit_var</code> | The extra variance contributed by the sky fit. |</p>
+<p>Metadata recorded: <code>sky_bspacing</code>, <code>sky_npoly</code>, <code>sky_local</code>, <code>n_orders_sky_subtracted</code> and <code>sky_residual_rms</code>.</p>
+<p><strong>QA Artifact:</strong> <code>sky_model</code>, with the image, the sky model and the residual for each order.</p>
+<p>An order with no usable trace, or too few sky pixels to fit, is skipped without being added to the Order Mask. Check <code>n_orders_sky_subtracted</code> in the metadata.</p></section>
+<section><h2>How to call it</h2><p><strong>Command line</strong></p>
+<div class="codehilite"><pre><span></span><code>onfire<span class="w"> </span>reduce<span class="w"> </span>config.yaml<span class="w"> </span>--until<span class="w"> </span>subtract_sky
+</code></pre></div>
+
+<p><strong>Parameter Config</strong></p>
+<div class="codehilite"><pre><span></span><code><span class="nt">steps</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">subtract_sky</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">sky_bspacing</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">30.0</span><span class="w">          </span><span class="c1"># spacing of the B-spline breakpoints, in pixels (default max(15, nspec/12))</span>
+<span class="w">    </span><span class="nt">sky_degree</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span><span class="w">               </span><span class="c1"># B-spline degree, 3 is cubic (default 3)</span>
+<span class="w">    </span><span class="nt">sky_npoly</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span><span class="w">                </span><span class="c1"># Legendre degree across the order (default 2)</span>
+<span class="w">    </span><span class="nt">sky_trim_edg</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3.0</span><span class="w">           </span><span class="c1"># pixels to ignore inside each order edge (default 3.0)</span>
+<span class="w">    </span><span class="nt">local_sky</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span><span class="w">             </span><span class="c1"># add a local correction around each object (default true)</span>
+<span class="w">    </span><span class="nt">local_window_factor</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1.5</span><span class="w">    </span><span class="c1"># width of that local window, in object box radii (default 1.5)</span>
+</code></pre></div>
+
+<p><strong>Python</strong></p>
+<div class="codehilite"><pre><span></span><code><span class="n">clone</span> <span class="o">=</span> <span class="n">baseline</span><span class="o">.</span><span class="n">run_step</span><span class="p">(</span><span class="s2">"subtract_sky"</span><span class="p">,</span> <span class="n">params</span><span class="o">=</span><span class="p">{</span><span class="s2">"sky_bspacing"</span><span class="p">:</span> <span class="mf">20.0</span><span class="p">},</span> <span class="n">clone</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="n">fig</span> <span class="o">=</span> <span class="n">baseline</span><span class="o">.</span><span class="n">compare</span><span class="p">(</span><span class="n">clone</span><span class="p">,</span> <span class="s2">"subtract_sky"</span><span class="p">)</span>
+</code></pre></div>
+
+<p>This step always processes all orders; it takes no <code>order</code> argument.</p></section>
+<section><h2>Figures</h2><figure class="pending"><div>figure pending: <code>subtract_sky/sky-model</code></div><figcaption>Image, sky model and residual of one order from the sky_model QA Artifact</figcaption></figure></section>
+<details><summary>Numerical methods and idea</summary><p>Telluric OH lines dominate the near-infrared sky, and they are tilted on the detector. A good model has to follow them along the line, not along the detector columns.</p>
+<p><strong>1. Tilted coordinate.</strong> For every pixel of an order, the dispersion row is corrected by the tilt model from <code>fit_tilts</code>. The result is the row the pixel would have if it sat on the order centre line:</p>
+<p>$$
+s = \text{row} - \delta(\text{row},\ \text{dspat}),
+$$</p>
+<p>so a sky line has the same $s$ at every position across the slit. Without a tilt surface the plain row is used.</p>
+<p><strong>2. Fractional spatial coordinate.</strong> Each pixel also gets $u = (\text{col} - \text{left}) / (\text{right} - \text{left})$, between 0 at the left edge and 1 at the right.</p>
+<p><strong>3. Choose sky pixels.</strong> Pixels are used if they lie at least <code>sky_trim_edg</code> inside the order edges, are finite with positive inverse variance, and fall outside every object box (<code>object_skymask</code>).</p>
+<p><strong>4. Fit the surface.</strong> The sky is modelled as a product of a cubic B-spline in $s$, with breakpoints every <code>sky_bspacing</code> pixels, and a Legendre polynomial in $u$:</p>
+<p>$$
+\text{sky}(s, u) = \sum_{a,b} c_{ab}\, B_a(s)\, P_b(u).
+$$</p>
+<p>The coefficients come from weighted least squares with weights $\sqrt{\text{ivar}}$ and iterative 3-sigma rejection, up to eight iterations. The surface is evaluated for the whole order, including under the objects. An order with fewer than <code>max(30, degree + npoly + 4)</code> sky pixels is skipped.</p>
+<p><strong>5. Local correction.</strong> If <code>local_sky</code> is on, a second, smaller fit is made to the residual in a window of <code>local_window_factor</code> times the object's box radius around each traced object, using finer breakpoints (half of <code>sky_bspacing</code>, but at least 5 pixels) and at most a linear term across the order. It is added to the sky model there.</p>
+<p><strong>6. Subtract and propagate.</strong> The sky model is subtracted from the science image. The residual variance of the sky fit, the squared RMS of its residuals, is added to the science variance.</p></details>
+<details><summary>Where this happens in the code</summary><p>The Step Engine loops over orders and combines the global and local fits:</p>
+<div class="code-ref"><div class="code-label">onfire/core/engines.py:1513</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">subtract_sky</span><span class="p">(</span>
+    <span class="n">products</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+    <span class="n">meta</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+    <span class="n">params</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">StepResult</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Model and subtract the 2D sky background per order (step 7).</span>
+
+<span class="sd">    The sky is fit as a B-spline along the tilted spectral coordinate times a</span>
+<span class="sd">    polynomial along the fractional spatial coordinate, using only background</span>
+<span class="sd">    pixels (outside the object boxes). A local residual surface is then fit</span>
+<span class="sd">    around each traced object. The resulting sky model is subtracted and the</span>
+<span class="sd">    propagated variance is emitted alongside the sky-subtracted image.</span>
+<span class="sd">    """</span>
+    <span class="n">image</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"science"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">image</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="s2">"subtract_sky requires a 'science' product; run process_science first"</span>
+        <span class="p">)</span>
+    <span class="n">traces_product</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"order_traces"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">traces_product</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="s2">"subtract_sky requires an 'order_traces' product; run trace_orders first"</span>
+        <span class="p">)</span>
+    <span class="n">image</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">image</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">nspec</span><span class="p">,</span> <span class="n">nspat</span> <span class="o">=</span> <span class="n">image</span><span class="o">.</span><span class="n">shape</span>
+    <span class="n">ivar</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"science_ivar"</span><span class="p">)</span>
+    <span class="n">ivar</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">ivar</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">ivar</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+        <span class="k">else</span> <span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">image</span><span class="p">),</span> <span class="mf">1.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">)</span>
+    <span class="p">)</span>
+    <span class="n">science_var</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"science_var"</span><span class="p">)</span>
+    <span class="n">science_var</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">science_var</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span> <span class="k">if</span> <span class="n">science_var</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="mf">0.0</span> <span class="o">*</span> <span class="n">image</span>
+    <span class="p">)</span>
+    <span class="n">science_mask</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"science_mask"</span><span class="p">)</span>
+    <span class="n">skymask</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"object_skymask"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">skymask</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">skymask</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">skymask</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">bool</span><span class="p">)</span>
+
+    <span class="n">tilt_coeffs</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"tilt_coeffs"</span><span class="p">)</span>
+    <span class="n">spec_order</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">meta</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"tilt_spec_order"</span><span class="p">,</span> <span class="mi">3</span><span class="p">))</span>
+    <span class="n">spat_order</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">meta</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"tilt_spat_order"</span><span class="p">,</span> <span class="mi">4</span><span class="p">))</span>
+    <span class="n">spat_scale</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">meta</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"tilt_spat_scale"</span><span class="p">,</span> <span class="mf">10.0</span><span class="p">))</span>
+
+    <span class="n">bspacing</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"sky_bspacing"</span><span class="p">,</span> <span class="nb">max</span><span class="p">(</span><span class="mf">15.0</span><span class="p">,</span> <span class="n">nspec</span> <span class="o">/</span> <span class="mf">12.0</span><span class="p">)))</span>
+    <span class="n">degree</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"sky_degree"</span><span class="p">,</span> <span class="mi">3</span><span class="p">))</span>
+    <span class="n">npoly</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"sky_npoly"</span><span class="p">,</span> <span class="mi">2</span><span class="p">))</span>
+    <span class="n">trim_edg</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"sky_trim_edg"</span><span class="p">,</span> <span class="mf">3.0</span><span class="p">))</span>
+    <span class="n">do_local</span> <span class="o">=</span> <span class="nb">bool</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"local_sky"</span><span class="p">,</span> <span class="kc">True</span><span class="p">))</span>
+    <span class="n">local_factor</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"local_window_factor"</span><span class="p">,</span> <span class="mf">1.5</span><span class="p">))</span>
+
+    <span class="n">object_traces</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"object_traces"</span><span class="p">)</span>
+    <span class="n">object_orders</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"object_orders"</span><span class="p">)</span>
+    <span class="n">object_box_radii</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"object_box_radii"</span><span class="p">)</span>
+
+    <span class="n">sky_global</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros_like</span><span class="p">(</span><span class="n">image</span><span class="p">)</span>
+    <span class="n">sky_fit_var</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros_like</span><span class="p">(</span><span class="n">image</span><span class="p">)</span>
+    <span class="n">sky_pixels</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros_like</span><span class="p">(</span><span class="n">image</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">bool</span><span class="p">)</span>
+    <span class="n">n_sky_orders</span> <span class="o">=</span> <span class="mi">0</span>
+
+    <span class="n">qa_panels</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]]</span> <span class="o">=</span> <span class="p">[]</span>
+
+    <span class="n">cols</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="n">nspat</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)[</span><span class="kc">None</span><span class="p">,</span> <span class="p">:]</span>
+
+    <span class="k">for</span> <span class="n">index</span><span class="p">,</span> <span class="n">order</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">FIRE_ORDER_NUMBERS</span><span class="p">):</span>
+        <span class="n">order</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">order</span><span class="p">)</span>
+        <span class="n">edges</span> <span class="o">=</span> <span class="n">_order_edges</span><span class="p">(</span><span class="n">traces_product</span><span class="p">,</span> <span class="n">order</span><span class="p">,</span> <span class="n">nspec</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">edges</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">continue</span>
+        <span class="n">left</span><span class="p">,</span> <span class="n">right</span> <span class="o">=</span> <span class="n">edges</span>
+        <span class="n">fit</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="k">if</span> <span class="n">tilt_coeffs</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">index</span> <span class="o">&lt;</span> <span class="nb">len</span><span class="p">(</span><span class="n">tilt_coeffs</span><span class="p">):</span>
+            <span class="n">coeffs</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">tilt_coeffs</span><span class="p">[</span><span class="n">index</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">np</span><span class="o">.</span><span class="n">all</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">coeffs</span><span class="p">)):</span>
+                <span class="n">fit</span> <span class="o">=</span> <span class="n">build_tilt_fit</span><span class="p">(</span>
+                    <span class="n">TiltFit</span><span class="p">(</span>
+                        <span class="n">coeffs</span><span class="o">=</span><span class="n">coeffs</span><span class="p">,</span>
+                        <span class="n">spec_order</span><span class="o">=</span><span class="n">spec_order</span><span class="p">,</span>
+                        <span class="n">spat_order</span><span class="o">=</span><span class="n">spat_order</span><span class="p">,</span>
+                        <span class="n">spec_scale</span><span class="o">=</span><span class="nb">float</span><span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">nspec</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)),</span>
+                        <span class="n">spat_scale</span><span class="o">=</span><span class="n">spat_scale</span><span class="p">,</span>
+                        <span class="n">rms</span><span class="o">=</span><span class="nb">float</span><span class="p">(</span><span class="s2">"nan"</span><span class="p">),</span>
+                        <span class="n">nlines</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span>
+                        <span class="n">tilt_angle</span><span class="o">=</span><span class="nb">float</span><span class="p">(</span><span class="s2">"nan"</span><span class="p">),</span>
+                        <span class="n">masked</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+                    <span class="p">)</span>
+                <span class="p">)</span>
+        <span class="n">spec_coord</span> <span class="o">=</span> <span class="n">tilted_coordinates</span><span class="p">(</span>
+            <span class="n">nspec</span><span class="p">,</span> <span class="n">nspat</span><span class="p">,</span> <span class="n">left</span><span class="p">,</span> <span class="n">right</span><span class="p">,</span> <span class="n">fit</span><span class="p">,</span> <span class="n">spat_scale</span><span class="o">=</span><span class="n">spat_scale</span>
+        <span class="p">)</span>
+        <span class="n">width</span> <span class="o">=</span> <span class="n">right</span> <span class="o">-</span> <span class="n">left</span>
+        <span class="n">safe_width</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">width</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">,</span> <span class="n">width</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">)</span>
+        <span class="n">on</span> <span class="o">=</span> <span class="p">(</span><span class="n">cols</span> <span class="o">&gt;=</span> <span class="n">left</span><span class="p">[:,</span> <span class="kc">None</span><span class="p">]</span> <span class="o">+</span> <span class="n">trim_edg</span><span class="p">)</span> <span class="o">&amp;</span> <span class="p">(</span><span class="n">cols</span> <span class="o">&lt;=</span> <span class="n">right</span><span class="p">[:,</span> <span class="kc">None</span><span class="p">]</span> <span class="o">-</span> <span class="n">trim_edg</span><span class="p">)</span>
+        <span class="n">ximg</span> <span class="o">=</span> <span class="p">(</span><span class="n">cols</span> <span class="o">-</span> <span class="n">left</span><span class="p">[:,</span> <span class="kc">None</span><span class="p">])</span> <span class="o">/</span> <span class="n">safe_width</span><span class="p">[:,</span> <span class="kc">None</span><span class="p">]</span>
+        <span class="n">good</span> <span class="o">=</span> <span class="n">on</span> <span class="o">&amp;</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">image</span><span class="p">)</span> <span class="o">&amp;</span> <span class="p">(</span><span class="n">ivar</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">skymask</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">good</span> <span class="o">&amp;=</span> <span class="n">skymask</span>
+        <span class="k">if</span> <span class="n">good</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span> <span class="o">&lt;</span> <span class="nb">max</span><span class="p">(</span><span class="mi">30</span><span class="p">,</span> <span class="n">degree</span> <span class="o">+</span> <span class="n">npoly</span> <span class="o">+</span> <span class="mi">4</span><span class="p">):</span>
+            <span class="k">continue</span>
+
+        <span class="n">weights</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">sqrt</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">ivar</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">,</span> <span class="n">ivar</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">))</span>
+        <span class="n">surface</span> <span class="o">=</span> <span class="n">fit_sky_surface</span><span class="p">(</span>
+            <span class="n">spec_coord</span><span class="p">[</span><span class="n">good</span><span class="p">],</span>
+            <span class="n">ximg</span><span class="p">[</span><span class="n">good</span><span class="p">],</span>
+            <span class="n">image</span><span class="p">[</span><span class="n">good</span><span class="p">],</span>
+            <span class="n">weights</span><span class="o">=</span><span class="n">weights</span><span class="p">[</span><span class="n">good</span><span class="p">],</span>
+            <span class="n">bspacing</span><span class="o">=</span><span class="n">bspacing</span><span class="p">,</span>
+            <span class="n">degree</span><span class="o">=</span><span class="n">degree</span><span class="p">,</span>
+            <span class="n">npoly</span><span class="o">=</span><span class="n">npoly</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="n">sky_global</span><span class="p">[</span><span class="n">on</span><span class="p">]</span> <span class="o">=</span> <span class="n">surface</span><span class="o">.</span><span class="n">evaluate</span><span class="p">(</span><span class="n">spec_coord</span><span class="p">[</span><span class="n">on</span><span class="p">],</span> <span class="n">ximg</span><span class="p">[</span><span class="n">on</span><span class="p">])</span>
+        <span class="k">if</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">surface</span><span class="o">.</span><span class="n">rms</span><span class="p">):</span>
+            <span class="c1"># Added variance from the scatter of the sky-fit residuals.</span>
+            <span class="n">sky_fit_var</span><span class="p">[</span><span class="n">on</span><span class="p">]</span> <span class="o">=</span> <span class="n">surface</span><span class="o">.</span><span class="n">rms</span><span class="o">**</span><span class="mi">2</span>
+        <span class="n">n_sky_orders</span> <span class="o">+=</span> <span class="mi">1</span>
+
+        <span class="k">if</span> <span class="p">(</span>
+            <span class="n">do_local</span>
+            <span class="ow">and</span> <span class="n">object_traces</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+            <span class="ow">and</span> <span class="n">object_orders</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+            <span class="ow">and</span> <span class="n">object_traces</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="o">&gt;</span> <span class="mi">0</span>
+        <span class="p">):</span>
+            <span class="n">members</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">object_orders</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">int</span><span class="p">)</span> <span class="o">==</span> <span class="n">order</span><span class="p">)[</span><span class="mi">0</span><span class="p">]</span>
+            <span class="k">for</span> <span class="n">j</span> <span class="ow">in</span> <span class="n">members</span><span class="p">:</span>
+                <span class="n">positions</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">object_traces</span><span class="p">[:,</span> <span class="n">j</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+                <span class="k">if</span> <span class="ow">not</span> <span class="n">np</span><span class="o">.</span><span class="n">any</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">positions</span><span class="p">)):</span>
+                    <span class="k">continue</span>
+                <span class="n">radius</span> <span class="o">=</span> <span class="p">(</span>
+                    <span class="nb">float</span><span class="p">(</span><span class="n">object_box_radii</span><span class="p">[</span><span class="n">j</span><span class="p">])</span> <span class="o">*</span> <span class="n">local_factor</span>
+                    <span class="k">if</span> <span class="n">object_box_radii</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+                    <span class="k">else</span> <span class="mf">8.0</span>
+                <span class="p">)</span>
+                <span class="n">near</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">abs</span><span class="p">(</span><span class="n">cols</span> <span class="o">-</span> <span class="n">positions</span><span class="p">[:,</span> <span class="kc">None</span><span class="p">])</span> <span class="o">&lt;=</span> <span class="n">radius</span>
+                <span class="n">window</span> <span class="o">=</span> <span class="n">near</span> <span class="o">&amp;</span> <span class="n">on</span> <span class="o">&amp;</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">image</span><span class="p">)</span> <span class="o">&amp;</span> <span class="p">(</span><span class="n">ivar</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">)</span>
+                <span class="k">if</span> <span class="n">skymask</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                    <span class="n">window</span> <span class="o">&amp;=</span> <span class="n">skymask</span>
+                <span class="k">if</span> <span class="n">window</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span> <span class="o">&lt;</span> <span class="mi">20</span><span class="p">:</span>
+                    <span class="k">continue</span>
+                <span class="n">residual</span> <span class="o">=</span> <span class="n">image</span> <span class="o">-</span> <span class="n">sky_global</span>
+                <span class="n">local_surface</span> <span class="o">=</span> <span class="n">fit_sky_surface</span><span class="p">(</span>
+                    <span class="n">spec_coord</span><span class="p">[</span><span class="n">window</span><span class="p">],</span>
+                    <span class="n">ximg</span><span class="p">[</span><span class="n">window</span><span class="p">],</span>
+                    <span class="n">residual</span><span class="p">[</span><span class="n">window</span><span class="p">],</span>
+                    <span class="n">weights</span><span class="o">=</span><span class="n">weights</span><span class="p">[</span><span class="n">window</span><span class="p">],</span>
+                    <span class="n">bspacing</span><span class="o">=</span><span class="nb">max</span><span class="p">(</span><span class="n">bspacing</span> <span class="o">/</span> <span class="mf">2.0</span><span class="p">,</span> <span class="mf">5.0</span><span class="p">),</span>
+                    <span class="n">degree</span><span class="o">=</span><span class="n">degree</span><span class="p">,</span>
+                    <span class="n">npoly</span><span class="o">=</span><span class="nb">min</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">npoly</span><span class="p">),</span>
+                <span class="p">)</span>
+                <span class="n">target</span> <span class="o">=</span> <span class="n">near</span> <span class="o">&amp;</span> <span class="n">on</span>
+                <span class="n">sky_global</span><span class="p">[</span><span class="n">target</span><span class="p">]</span> <span class="o">+=</span> <span class="n">local_surface</span><span class="o">.</span><span class="n">evaluate</span><span class="p">(</span>
+                    <span class="n">spec_coord</span><span class="p">[</span><span class="n">target</span><span class="p">],</span> <span class="n">ximg</span><span class="p">[</span><span class="n">target</span><span class="p">]</span>
+                <span class="p">)</span>
+
+        <span class="n">sky_pixels</span> <span class="o">|=</span> <span class="n">on</span> <span class="o">&amp;</span> <span class="p">(</span><span class="n">skymask</span> <span class="k">if</span> <span class="n">skymask</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="kc">True</span><span class="p">)</span>
+
+        <span class="n">masked_image</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">on</span><span class="p">,</span> <span class="n">image</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">nan</span><span class="p">)</span>
+        <span class="n">masked_model</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">on</span><span class="p">,</span> <span class="n">sky_global</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">nan</span><span class="p">)</span>
+        <span class="n">masked_residual</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">on</span><span class="p">,</span> <span class="n">image</span> <span class="o">-</span> <span class="n">sky_global</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">nan</span><span class="p">)</span>
+        <span class="n">qa_panels</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">order</span><span class="p">,</span> <span class="n">masked_image</span><span class="p">,</span> <span class="n">masked_model</span><span class="p">,</span> <span class="n">masked_residual</span><span class="p">))</span>
+
+    <span class="n">science_sky</span> <span class="o">=</span> <span class="n">image</span> <span class="o">-</span> <span class="n">sky_global</span>
+    <span class="n">science_sky_var</span> <span class="o">=</span> <span class="n">science_var</span> <span class="o">+</span> <span class="n">sky_fit_var</span>
+    <span class="n">good_final</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">science_sky</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">science_mask</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">good_final</span> <span class="o">&amp;=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">science_mask</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">bool</span><span class="p">)</span>
+    <span class="k">with</span> <span class="n">np</span><span class="o">.</span><span class="n">errstate</span><span class="p">(</span><span class="n">invalid</span><span class="o">=</span><span class="s2">"ignore"</span><span class="p">,</span> <span class="n">divide</span><span class="o">=</span><span class="s2">"ignore"</span><span class="p">):</span>
+        <span class="n">sky_ivar</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span>
+            <span class="n">good_final</span><span class="p">,</span>
+            <span class="mf">1.0</span> <span class="o">/</span> <span class="n">np</span><span class="o">.</span><span class="n">maximum</span><span class="p">(</span><span class="n">science_sky_var</span><span class="p">,</span> <span class="mf">1e-12</span><span class="p">),</span>
+            <span class="mf">0.0</span><span class="p">,</span>
+        <span class="p">)</span>
+
+    <span class="n">qa</span> <span class="o">=</span> <span class="n">_sky_qa_figure</span><span class="p">(</span><span class="n">qa_panels</span><span class="p">)</span>
+    <span class="n">residual_scatter</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="nb">float</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">sqrt</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">science_sky</span><span class="p">[</span><span class="n">sky_pixels</span><span class="p">]</span> <span class="o">**</span> <span class="mi">2</span><span class="p">)))</span>
+        <span class="k">if</span> <span class="n">sky_pixels</span><span class="o">.</span><span class="n">any</span><span class="p">()</span>
+        <span class="k">else</span> <span class="nb">float</span><span class="p">(</span><span class="s2">"nan"</span><span class="p">)</span>
+    <span class="p">)</span>
+    <span class="k">return</span> <span class="n">StepResult</span><span class="p">(</span>
+        <span class="n">products</span><span class="o">=</span><span class="p">{</span>
+            <span class="s2">"sky_model"</span><span class="p">:</span> <span class="n">sky_global</span><span class="p">,</span>
+            <span class="s2">"sky_fit_var"</span><span class="p">:</span> <span class="n">sky_fit_var</span><span class="p">,</span>
+            <span class="s2">"science_sky"</span><span class="p">:</span> <span class="n">science_sky</span><span class="p">,</span>
+            <span class="s2">"science_sky_var"</span><span class="p">:</span> <span class="n">science_sky_var</span><span class="p">,</span>
+            <span class="s2">"science_sky_ivar"</span><span class="p">:</span> <span class="n">sky_ivar</span><span class="p">,</span>
+        <span class="p">},</span>
+        <span class="n">meta</span><span class="o">=</span><span class="p">{</span>
+            <span class="s2">"sky_bspacing"</span><span class="p">:</span> <span class="n">bspacing</span><span class="p">,</span>
+            <span class="s2">"sky_npoly"</span><span class="p">:</span> <span class="n">npoly</span><span class="p">,</span>
+            <span class="s2">"sky_local"</span><span class="p">:</span> <span class="nb">bool</span><span class="p">(</span><span class="n">do_local</span><span class="p">),</span>
+            <span class="s2">"n_orders_sky_subtracted"</span><span class="p">:</span> <span class="nb">int</span><span class="p">(</span><span class="n">n_sky_orders</span><span class="p">),</span>
+            <span class="s2">"sky_residual_rms"</span><span class="p">:</span> <span class="n">residual_scatter</span><span class="p">,</span>
+        <span class="p">},</span>
+        <span class="n">plots</span><span class="o">=</span><span class="p">{</span><span class="s2">"sky_model"</span><span class="p">:</span> <span class="n">qa</span><span class="p">},</span>
+    <span class="p">)</span>
+</pre></div>
+</div>
+<p>The pure array algorithms in <code>onfire/core/skysub.py</code>:</p>
+<div class="code-ref"><div class="code-label">onfire/core/skysub.py:178</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">tilted_coordinates</span><span class="p">(</span>
+    <span class="n">nspec</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="n">nspat</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="n">left</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">right</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">fit</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">spat_scale</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Build the tilted spectral coordinate across a full detector image.</span>
+
+<span class="sd">    The coordinate follows the arc-line tilt: a pixel at spatial offset</span>
+<span class="sd">    ``dspat`` from the order centre is assigned the spectral coordinate it</span>
+<span class="sd">    would have on the order centre line. When no tilt surface is supplied the</span>
+<span class="sd">    raw dispersion row coordinate is returned.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        nspec: Number of dispersion pixels.</span>
+<span class="sd">        nspat: Number of spatial pixels.</span>
+<span class="sd">        left: Left order edge per dispersion row, in pixels.</span>
+<span class="sd">        right: Right order edge per dispersion row, in pixels.</span>
+<span class="sd">        fit: A :class:`~onfire.core.polyfit.PolynomialFit` tilt surface, or</span>
+<span class="sd">            ``None`` to fall back to the row coordinate.</span>
+<span class="sd">        spat_scale: Spatial normalization scale of the tilt surface.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        A ``(nspec, nspat)`` array of tilted spectral coordinates.</span>
+<span class="sd">    """</span>
+    <span class="n">rows</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="n">nspec</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)[:,</span> <span class="kc">None</span><span class="p">]</span>
+    <span class="n">row_grid</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">broadcast_to</span><span class="p">(</span><span class="n">rows</span><span class="p">,</span> <span class="p">(</span><span class="n">nspec</span><span class="p">,</span> <span class="n">nspat</span><span class="p">))</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="nb">float</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">fit</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">row_grid</span>
+    <span class="n">cols</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="n">nspat</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)[</span><span class="kc">None</span><span class="p">,</span> <span class="p">:]</span>
+    <span class="n">center</span> <span class="o">=</span> <span class="mf">0.5</span> <span class="o">*</span> <span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">left</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span> <span class="o">+</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">right</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">))[:,</span> <span class="kc">None</span><span class="p">]</span>
+    <span class="n">dspat</span> <span class="o">=</span> <span class="n">cols</span> <span class="o">-</span> <span class="n">center</span>
+    <span class="n">delta</span> <span class="o">=</span> <span class="n">evaluate_tilt_surface</span><span class="p">(</span>
+        <span class="n">fit</span><span class="p">,</span>
+        <span class="n">row_grid</span><span class="o">.</span><span class="n">ravel</span><span class="p">(),</span>
+        <span class="n">dspat</span><span class="o">.</span><span class="n">ravel</span><span class="p">(),</span>
+        <span class="n">nspec</span><span class="o">=</span><span class="n">nspec</span><span class="p">,</span>
+        <span class="n">spat_scale</span><span class="o">=</span><span class="n">spat_scale</span><span class="p">,</span>
+    <span class="p">)</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="n">nspec</span><span class="p">,</span> <span class="n">nspat</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">row_grid</span> <span class="o">-</span> <span class="n">delta</span>
+</pre></div>
+</div>
+<div class="code-ref"><div class="code-label">onfire/core/skysub.py:109</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">fit_sky_surface</span><span class="p">(</span>
+    <span class="n">spec_coord</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">ximg</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">values</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">weights</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">bspacing</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">30.0</span><span class="p">,</span>
+    <span class="n">degree</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">3</span><span class="p">,</span>
+    <span class="n">npoly</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">2</span><span class="p">,</span>
+    <span class="n">sigrej</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">3.0</span><span class="p">,</span>
+    <span class="n">niter</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">8</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">SkyFit</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Fit a 2D B-spline sky surface to the background pixels of one order.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        spec_coord: Tilted spectral coordinate of each pixel.</span>
+<span class="sd">        ximg: Fractional spatial coordinate (0 at the left edge, 1 at the right).</span>
+<span class="sd">        values: Sky counts to fit.</span>
+<span class="sd">        weights: Optional per-pixel fit weights, e.g. ``sqrt(ivar)``.</span>
+<span class="sd">        bspacing: B-spline breakpoint spacing, in pixels.</span>
+<span class="sd">        degree: B-spline degree (3 = cubic).</span>
+<span class="sd">        npoly: Legendre polynomial degree along the spatial axis.</span>
+<span class="sd">        sigrej: Rejection threshold in robust sigma.</span>
+<span class="sd">        niter: Maximum number of rejection iterations.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        The fitted :class:`SkyFit`.</span>
+<span class="sd">    """</span>
+    <span class="n">spec_coord</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">spec_coord</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span><span class="o">.</span><span class="n">ravel</span><span class="p">()</span>
+    <span class="n">ximg</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">ximg</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span><span class="o">.</span><span class="n">ravel</span><span class="p">()</span>
+    <span class="n">values</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">values</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span><span class="o">.</span><span class="n">ravel</span><span class="p">()</span>
+    <span class="n">weights</span> <span class="o">=</span> <span class="kc">None</span> <span class="k">if</span> <span class="n">weights</span> <span class="ow">is</span> <span class="kc">None</span> <span class="k">else</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">weights</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span><span class="o">.</span><span class="n">ravel</span><span class="p">()</span>
+
+    <span class="n">finite</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">spec_coord</span><span class="p">)</span> <span class="o">&amp;</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">ximg</span><span class="p">)</span> <span class="o">&amp;</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">values</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">weights</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">finite</span> <span class="o">&amp;=</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">weights</span><span class="p">)</span> <span class="o">&amp;</span> <span class="p">(</span><span class="n">weights</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">)</span>
+    <span class="n">min_points</span> <span class="o">=</span> <span class="p">(</span><span class="n">degree</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span> <span class="o">+</span> <span class="p">(</span><span class="n">npoly</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span> <span class="o">+</span> <span class="mi">1</span>
+    <span class="n">domains</span> <span class="o">=</span> <span class="p">[(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">)]</span>
+    <span class="k">if</span> <span class="n">finite</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span> <span class="o">&lt;</span> <span class="n">min_points</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">SkyFit</span><span class="p">(</span>
+            <span class="n">basis</span><span class="o">=</span><span class="n">BSplineBasis</span><span class="o">.</span><span class="n">uniform</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">,</span> <span class="n">bspacing</span><span class="p">,</span> <span class="n">degree</span><span class="p">),</span>
+            <span class="n">npoly</span><span class="o">=</span><span class="n">npoly</span><span class="p">,</span>
+            <span class="n">poly_domains</span><span class="o">=</span><span class="n">domains</span><span class="p">,</span>
+            <span class="n">coeffs</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">1</span><span class="p">),</span>
+            <span class="n">rms</span><span class="o">=</span><span class="nb">float</span><span class="p">(</span><span class="s2">"nan"</span><span class="p">),</span>
+            <span class="n">npoints</span><span class="o">=</span><span class="nb">int</span><span class="p">(</span><span class="n">finite</span><span class="o">.</span><span class="n">sum</span><span class="p">()),</span>
+        <span class="p">)</span>
+
+    <span class="n">basis</span> <span class="o">=</span> <span class="n">BSplineBasis</span><span class="o">.</span><span class="n">uniform</span><span class="p">(</span>
+        <span class="n">spec_coord</span><span class="p">[</span><span class="n">finite</span><span class="p">]</span><span class="o">.</span><span class="n">min</span><span class="p">(),</span> <span class="n">spec_coord</span><span class="p">[</span><span class="n">finite</span><span class="p">]</span><span class="o">.</span><span class="n">max</span><span class="p">(),</span> <span class="n">bspacing</span><span class="p">,</span> <span class="n">degree</span>
+    <span class="p">)</span>
+    <span class="n">xc</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">clip</span><span class="p">(</span><span class="n">ximg</span><span class="p">[</span><span class="n">finite</span><span class="p">],</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">)</span>
+    <span class="n">bspline</span> <span class="o">=</span> <span class="n">basis</span><span class="o">.</span><span class="n">design</span><span class="p">(</span><span class="n">spec_coord</span><span class="p">[</span><span class="n">finite</span><span class="p">])</span>
+    <span class="n">poly</span> <span class="o">=</span> <span class="n">design_matrix</span><span class="p">([</span><span class="n">xc</span><span class="p">],</span> <span class="p">(</span><span class="n">npoly</span><span class="p">,),</span> <span class="n">domains</span><span class="p">)</span>
+    <span class="n">design</span> <span class="o">=</span> <span class="p">(</span><span class="n">bspline</span><span class="p">[:,</span> <span class="p">:,</span> <span class="kc">None</span><span class="p">]</span> <span class="o">*</span> <span class="n">poly</span><span class="p">[:,</span> <span class="kc">None</span><span class="p">,</span> <span class="p">:])</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="n">finite</span><span class="o">.</span><span class="n">sum</span><span class="p">(),</span> <span class="o">-</span><span class="mi">1</span><span class="p">)</span>
+    <span class="n">fit_weights</span> <span class="o">=</span> <span class="n">weights</span><span class="p">[</span><span class="n">finite</span><span class="p">]</span> <span class="k">if</span> <span class="n">weights</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="n">np</span><span class="o">.</span><span class="n">ones</span><span class="p">(</span><span class="n">finite</span><span class="o">.</span><span class="n">sum</span><span class="p">())</span>
+    <span class="n">coeffs</span><span class="p">,</span> <span class="n">_</span><span class="p">,</span> <span class="n">rms</span> <span class="o">=</span> <span class="n">robust_matrix_fit</span><span class="p">(</span>
+        <span class="n">design</span><span class="p">,</span> <span class="n">values</span><span class="p">[</span><span class="n">finite</span><span class="p">],</span> <span class="n">weights</span><span class="o">=</span><span class="n">fit_weights</span><span class="p">,</span> <span class="n">niter</span><span class="o">=</span><span class="n">niter</span><span class="p">,</span> <span class="n">sigrej</span><span class="o">=</span><span class="n">sigrej</span>
+    <span class="p">)</span>
+    <span class="k">return</span> <span class="n">SkyFit</span><span class="p">(</span>
+        <span class="n">basis</span><span class="o">=</span><span class="n">basis</span><span class="p">,</span>
+        <span class="n">npoly</span><span class="o">=</span><span class="n">npoly</span><span class="p">,</span>
+        <span class="n">poly_domains</span><span class="o">=</span><span class="n">domains</span><span class="p">,</span>
+        <span class="n">coeffs</span><span class="o">=</span><span class="n">coeffs</span><span class="p">,</span>
+        <span class="n">rms</span><span class="o">=</span><span class="n">rms</span><span class="p">,</span>
+        <span class="n">npoints</span><span class="o">=</span><span class="nb">int</span><span class="p">(</span><span class="n">finite</span><span class="o">.</span><span class="n">sum</span><span class="p">()),</span>
+    <span class="p">)</span>
+</pre></div>
+</div></details>
+</main>
+<script defer src="static/katex/katex.min.js"></script>
+<script defer src="static/katex/auto-render.min.js"></script>
+<script defer src="static/guide.js"></script>
+</body>
+</html>

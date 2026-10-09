@@ -1,0 +1,483 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>telluric_correct - onfire</title>
+<link rel="stylesheet" href="static/katex/katex.min.css">
+<link rel="stylesheet" href="static/pygments.css">
+<link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+<nav class="sidebar">
+<a class="brand" href="index.html">onfire</a>
+<ul><li><a href="index.html">Overview</a></li><li><a href="quickstart.html">Quickstart</a></li><li><a href="frame-table.html">Frame Table</a></li><li><a href="parameter-config.html">Parameter Config</a></li><li><a href="interactive.html">Interactive analysis</a></li></ul>
+<div class="group">Reduction steps</div><ul><li><a href="prep_calibrations.html">prep_calibrations</a></li><li><a href="trace_orders.html">trace_orders</a></li><li><a href="calibrate_wavelengths.html">calibrate_wavelengths</a></li><li><a href="fit_tilts.html">fit_tilts</a></li><li><a href="process_science.html">process_science</a></li><li><a href="find_objects.html">find_objects</a></li><li><a href="subtract_sky.html">subtract_sky</a></li><li><a href="extract_1d.html">extract_1d</a></li><li><a href="flux_calibrate.html">flux_calibrate</a></li><li><a href="telluric_correct.html" aria-current="page">telluric_correct</a></li><li><a href="coadd_orders.html">coadd_orders</a></li><li><a href="extinction_correct.html">extinction_correct</a></li></ul>
+</nav>
+<main>
+<h1>telluric_correct</h1>
+<p class="purpose">Remove the absorption imprinted by Earth&#x27;s atmosphere from the flux-calibrated spectra, using either an observed A0V standard star or a precomputed atmospheric model.</p>
+<section><h2>Inputs and outputs</h2><p><strong>Reads</strong></p>
+<ul>
+<li><code>wave_soln</code>, <code>objects</code>, and the calibrated <code>flux</code> and <code>flux_var</code> from <code>flux_calibrate</code>.</li>
+<li>For the Empirical Telluric Correction: <code>standard_flux</code> (the observed standard) and <code>standard_true</code> (its true spectrum on each order's grid, written by <code>flux_calibrate</code>).</li>
+<li>For the Grid Telluric Correction: the PCA atmospheric components, either as a <code>telluric_pca</code> product or from the file named in <code>telpca_path</code>.</li>
+<li>Frame Table role loaded for this step: <code>standard</code>.</li>
+</ul>
+<p>Both corrections are computed whenever their inputs exist. One of them is then made the active result.</p>
+<p><strong>Writes</strong></p>
+<p>| Product | Contents |
+|---------|----------|
+| <code>telluric_flux</code>, <code>telluric_var</code>, <code>telluric_ivar</code>, <code>telluric_mask</code> | The corrected spectra, with one column per object, from the <strong>active</strong> method. |
+| <code>telluric_transmission</code>, <code>telluric_wave</code> | The transmission divided out, and the wavelength grid, from the active method. |
+| <code>telluric</code> | Table with one row per object: <code>order</code>, <code>obj_id</code>, <code>method</code>, <code>rms</code>, <code>ncoeff</code> and <code>masked</code>. |
+| <code>telluric_empirical_*</code>, <code>telluric_grid_*</code> | The same set of products for each method that could be computed, so both can be compared. |</p>
+<p>Metadata recorded: <code>telluric_method</code>, <code>n_objects_telluric_corrected</code>, <code>telluric_available_empirical</code> and <code>telluric_available_grid</code>.</p>
+<p><strong>QA Artifacts:</strong> <code>telluric_transmission</code> (empirical and grid curves per object) and <code>telluric_spectra</code> (corrected spectra over the uncorrected ones).</p></section>
+<section><h2>How to call it</h2><p><strong>Command line</strong></p>
+<div class="codehilite"><pre><span></span><code>onfire<span class="w"> </span>reduce<span class="w"> </span>config.yaml<span class="w"> </span>--until<span class="w"> </span>telluric_correct
+</code></pre></div>
+
+<p><strong>Parameter Config</strong></p>
+<div class="codehilite"><pre><span></span><code><span class="nt">steps</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">telluric_correct</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">method</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">auto</span><span class="w">                  </span><span class="c1"># auto, empirical or grid (default auto)</span>
+<span class="w">    </span><span class="nt">telluric_continuum_order</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">6</span><span class="w">   </span><span class="c1"># empirical: polynomial order of the smooth response (default 6)</span>
+<span class="w">    </span><span class="nt">telluric_object_order</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4</span><span class="w">      </span><span class="c1"># grid: polynomial order of the object continuum (default 4)</span>
+<span class="w">    </span><span class="nt">telluric_grid_niter</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4</span><span class="w">        </span><span class="c1"># grid: continuum/transmission iterations (default 4)</span>
+<span class="w">    </span><span class="c1"># telluric_ncoeff: 8          # grid: number of PCA components to fit (default all)</span>
+<span class="w">    </span><span class="c1"># telpca_path: telpca.fits    # grid: file holding the PCA components</span>
+</code></pre></div>
+
+<p>With <code>method: auto</code> the Empirical Telluric Correction is active when a standard star is available, and otherwise the Grid Telluric Correction. Asking for a method whose inputs are missing raises <code>ValueError</code>.</p>
+<p><strong>Python</strong>, comparing the two and choosing one:</p>
+<div class="codehilite"><pre><span></span><code><span class="n">fig</span> <span class="o">=</span> <span class="n">baseline</span><span class="o">.</span><span class="n">compare_telluric</span><span class="p">()</span>          <span class="c1"># both corrections, side by side</span>
+<span class="n">clone</span> <span class="o">=</span> <span class="n">baseline</span><span class="o">.</span><span class="n">run_step</span><span class="p">(</span><span class="s2">"telluric_correct"</span><span class="p">,</span> <span class="n">params</span><span class="o">=</span><span class="p">{</span><span class="s2">"method"</span><span class="p">:</span> <span class="s2">"grid"</span><span class="p">},</span> <span class="n">clone</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="n">baseline</span><span class="o">.</span><span class="n">commit</span><span class="p">(</span><span class="n">clone</span><span class="p">)</span>                     <span class="c1"># adopt the grid correction</span>
+</code></pre></div>
+
+<p>Choosing a method is an ordinary re-run on a State Clone followed by Commit. This step always processes all objects; it takes no <code>order</code> argument.</p></section>
+<section><h2>Figures</h2><figure class="pending"><div>figure pending: <code>telluric_correct/transmission</code></div><figcaption>Empirical and grid transmission curves from the telluric_transmission QA Artifact</figcaption></figure>
+
+<figure class="pending"><div>figure pending: <code>telluric_correct/corrected</code></div><figcaption>Corrected spectrum over the uncorrected one</figcaption></figure></section>
+<details><summary>Numerical methods and idea</summary><p>Both methods estimate an atmospheric transmission $T(\lambda)$ and divide the spectrum by it. Pixels are never divided by less than $T = 10^{-3}$.</p>
+<p><strong>Empirical (from an A0V standard).</strong> An A0V star has a nearly featureless spectrum apart from its hydrogen lines, which the template supplies. The ratio of the observed standard to that template is the smooth instrument response times the atmosphere. A robust smooth log-polynomial of order <code>telluric_continuum_order</code> is fit to the ratio and divided out, leaving</p>
+<p>$$
+T(\lambda) = \frac{\text{observed standard} / \text{A0V template}}{\text{smooth response}},
+$$</p>
+<p>clipped to the range $[10^{-3}, 1]$. Absolute scaling, exposure time and sampling cancel in the ratio.</p>
+<p><strong>Grid (from a PCA model).</strong> The atmosphere is represented by a TelPCA grid whose components linearly describe the inverse hyperbolic sine of the optical depth:</p>
+<p>$$
+\operatorname{arcsinh}\tau(\lambda) = \sum_k a_k\, C_k(\lambda), \qquad
+T(\lambda) = e^{-\tau(\lambda)},
+$$</p>
+<p>where $C_0$ is the model mean and the coefficients $a_k$ scale the other components. With no standard star, the object's own continuum and the transmission are fit together by alternating <code>telluric_grid_niter</code> times. Each pass fits a robust polynomial continuum of order <code>telluric_object_order</code> to the spectrum divided by the current transmission (after the first pass, using only pixels where the transmission is above 0.9, so absorption lines do not bias it), then refits the PCA coefficients by linear least squares to the spectrum divided by that continuum.</p>
+<p><strong>Applying.</strong> The corrected flux is $F/T$ and the variance becomes $\sigma^2/T^2$.</p></details>
+<details><summary>Where this happens in the code</summary><p>The Step Engine picks the active method and assembles the products:</p>
+<div class="code-ref"><div class="code-label">onfire/core/engines.py:2740</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">telluric_correct</span><span class="p">(</span>
+    <span class="n">products</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+    <span class="n">meta</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+    <span class="n">params</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">StepResult</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Remove atmospheric absorption per order (reduction step 10).</span>
+
+<span class="sd">    Two independent corrections are computed when their inputs are available:</span>
+<span class="sd">    an empirical correction derived from an observed A0V standard star</span>
+<span class="sd">    (``standard_flux``/``standard_true``) and a grid correction fit against a</span>
+<span class="sd">    precomputed PCA atmospheric model (``telluric_pca``). In ``auto`` mode the</span>
+<span class="sd">    empirical correction is committed when a standard star exists, otherwise the</span>
+<span class="sd">    grid correction is used.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        products: State products. Requires flux-calibrated ``flux``/``flux_var``</span>
+<span class="sd">            arrays, ``wave_soln`` and ``objects``.</span>
+<span class="sd">        meta: State metadata (unused).</span>
+<span class="sd">        params: Algorithmic parameters, including ``method``</span>
+<span class="sd">            (``auto``/``empirical``/``grid``).</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        A :class:`StepResult` with the committed ``telluric_*`` products, every</span>
+<span class="sd">        available candidate correction, a ``telluric`` table, and QA figures.</span>
+<span class="sd">    """</span>
+    <span class="n">wave_soln</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"wave_soln"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">wave_soln</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="s2">"telluric_correct requires a 'wave_soln' product; "</span>
+            <span class="s2">"run calibrate_wavelengths first"</span>
+        <span class="p">)</span>
+    <span class="n">objects</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"objects"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">objects</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="s2">"telluric_correct requires an 'objects' product; run find_objects first"</span>
+        <span class="p">)</span>
+    <span class="n">flux</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"flux"</span><span class="p">)</span>
+    <span class="n">flux_var</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"flux_var"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">flux</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="s2">"telluric_correct requires a 'flux' product; run flux_calibrate first"</span>
+        <span class="p">)</span>
+    <span class="n">wave_soln</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">wave_soln</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">flux</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">flux</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">flux_var</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">flux_var</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">flux_var</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+        <span class="k">else</span> <span class="n">np</span><span class="o">.</span><span class="n">full_like</span><span class="p">(</span><span class="n">flux</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">nan</span><span class="p">)</span>
+    <span class="p">)</span>
+
+    <span class="n">standard_observed</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"standard_flux"</span><span class="p">)</span>
+    <span class="n">standard_model</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"standard_true"</span><span class="p">)</span>
+    <span class="n">has_empirical</span> <span class="o">=</span> <span class="n">standard_observed</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">standard_model</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+    <span class="n">components</span> <span class="o">=</span> <span class="n">_telluric_components</span><span class="p">(</span><span class="n">products</span><span class="p">,</span> <span class="n">params</span><span class="p">)</span>
+    <span class="n">has_grid</span> <span class="o">=</span> <span class="n">components</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+
+    <span class="n">requested</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"method"</span><span class="p">,</span> <span class="s2">"auto"</span><span class="p">))</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span>
+    <span class="k">if</span> <span class="n">requested</span> <span class="o">==</span> <span class="s2">"auto"</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">has_empirical</span><span class="p">:</span>
+            <span class="n">active</span> <span class="o">=</span> <span class="s2">"empirical"</span>
+        <span class="k">elif</span> <span class="n">has_grid</span><span class="p">:</span>
+            <span class="n">active</span> <span class="o">=</span> <span class="s2">"grid"</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+                <span class="s2">"telluric_correct found neither a standard star nor a telluric "</span>
+                <span class="s2">"PCA grid; supply 'standard_flux'/'standard_true' or "</span>
+                <span class="s2">"'telluric_pca'/'telpca_path'"</span>
+            <span class="p">)</span>
+    <span class="k">elif</span> <span class="n">requested</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"empirical"</span><span class="p">,</span> <span class="s2">"grid"</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">requested</span> <span class="o">==</span> <span class="s2">"empirical"</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">has_empirical</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+                <span class="s2">"telluric_correct method 'empirical' requires "</span>
+                <span class="s2">"'standard_flux' and 'standard_true' products"</span>
+            <span class="p">)</span>
+        <span class="k">if</span> <span class="n">requested</span> <span class="o">==</span> <span class="s2">"grid"</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">has_grid</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+                <span class="s2">"telluric_correct method 'grid' requires a 'telluric_pca' "</span>
+                <span class="s2">"product or a 'telpca_path' parameter"</span>
+            <span class="p">)</span>
+        <span class="n">active</span> <span class="o">=</span> <span class="n">requested</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">available</span> <span class="o">=</span> <span class="p">[</span><span class="s2">"auto"</span><span class="p">]</span>
+        <span class="k">if</span> <span class="n">has_empirical</span><span class="p">:</span>
+            <span class="n">available</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">"empirical"</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">has_grid</span><span class="p">:</span>
+            <span class="n">available</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">"grid"</span><span class="p">)</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">"unknown telluric method </span><span class="si">{</span><span class="n">requested</span><span class="si">!r}</span><span class="s2">; available methods: </span><span class="si">{</span><span class="n">available</span><span class="si">}</span><span class="s2">"</span>
+        <span class="p">)</span>
+
+    <span class="n">empirical</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="n">_run_telluric_correction</span><span class="p">(</span>
+            <span class="n">wave_soln</span><span class="p">,</span>
+            <span class="n">objects</span><span class="p">,</span>
+            <span class="n">flux</span><span class="p">,</span>
+            <span class="n">flux_var</span><span class="p">,</span>
+            <span class="n">_empirical_correction</span><span class="p">(</span>
+                <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">standard_observed</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">),</span>
+                <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">standard_model</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">),</span>
+                <span class="n">params</span><span class="p">,</span>
+            <span class="p">),</span>
+        <span class="p">)</span>
+        <span class="k">if</span> <span class="n">has_empirical</span>
+        <span class="k">else</span> <span class="kc">None</span>
+    <span class="p">)</span>
+    <span class="n">grid</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="n">_run_telluric_correction</span><span class="p">(</span>
+            <span class="n">wave_soln</span><span class="p">,</span>
+            <span class="n">objects</span><span class="p">,</span>
+            <span class="n">flux</span><span class="p">,</span>
+            <span class="n">flux_var</span><span class="p">,</span>
+            <span class="n">_grid_correction</span><span class="p">(</span><span class="n">flux</span><span class="p">,</span> <span class="n">components</span><span class="p">,</span> <span class="n">params</span><span class="p">),</span>
+        <span class="p">)</span>
+        <span class="k">if</span> <span class="n">has_grid</span>
+        <span class="k">else</span> <span class="kc">None</span>
+    <span class="p">)</span>
+    <span class="n">selected</span> <span class="o">=</span> <span class="n">empirical</span> <span class="k">if</span> <span class="n">active</span> <span class="o">==</span> <span class="s2">"empirical"</span> <span class="k">else</span> <span class="n">grid</span>
+    <span class="k">if</span> <span class="n">selected</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">"telluric_correct could not compute the </span><span class="si">{</span><span class="n">active</span><span class="si">!r}</span><span class="s2"> correction"</span>
+        <span class="p">)</span>
+
+    <span class="n">orders</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">objects</span><span class="p">[</span><span class="s2">"order"</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">int</span><span class="p">)</span>
+    <span class="n">obj_ids</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">objects</span><span class="p">[</span><span class="s2">"obj_id"</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">int</span><span class="p">)</span>
+    <span class="n">table</span> <span class="o">=</span> <span class="n">Table</span><span class="p">(</span>
+        <span class="p">{</span>
+            <span class="s2">"order"</span><span class="p">:</span> <span class="n">orders</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">int16</span><span class="p">),</span>
+            <span class="s2">"obj_id"</span><span class="p">:</span> <span class="n">obj_ids</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">int32</span><span class="p">),</span>
+            <span class="s2">"method"</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">([</span><span class="n">active</span><span class="p">]</span> <span class="o">*</span> <span class="nb">len</span><span class="p">(</span><span class="n">orders</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">str</span><span class="p">),</span>
+            <span class="s2">"rms"</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">selected</span><span class="p">[</span><span class="s2">"rms"</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">),</span>
+            <span class="s2">"ncoeff"</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">full</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">orders</span><span class="p">),</span> <span class="nb">int</span><span class="p">(</span><span class="n">selected</span><span class="p">[</span><span class="s2">"ncoeff"</span><span class="p">]),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">int32</span><span class="p">),</span>
+            <span class="s2">"masked"</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span>
+                <span class="p">[</span><span class="ow">not</span> <span class="n">np</span><span class="o">.</span><span class="n">any</span><span class="p">(</span><span class="n">selected</span><span class="p">[</span><span class="s2">"mask"</span><span class="p">][:,</span> <span class="n">j</span><span class="p">])</span> <span class="k">for</span> <span class="n">j</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">flux</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">1</span><span class="p">])],</span>
+                <span class="n">dtype</span><span class="o">=</span><span class="nb">bool</span><span class="p">,</span>
+            <span class="p">),</span>
+        <span class="p">},</span>
+        <span class="n">names</span><span class="o">=</span><span class="n">TELLURIC_COLUMNS</span><span class="p">,</span>
+    <span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_candidate</span><span class="p">(</span><span class="n">name</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">data</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]:</span>
+        <span class="k">return</span> <span class="p">{</span>
+            <span class="sa">f</span><span class="s2">"telluric_</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">_transmission"</span><span class="p">:</span> <span class="n">data</span><span class="p">[</span><span class="s2">"transmission"</span><span class="p">],</span>
+            <span class="sa">f</span><span class="s2">"telluric_</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">_flux"</span><span class="p">:</span> <span class="n">data</span><span class="p">[</span><span class="s2">"flux"</span><span class="p">],</span>
+            <span class="sa">f</span><span class="s2">"telluric_</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">_var"</span><span class="p">:</span> <span class="n">data</span><span class="p">[</span><span class="s2">"var"</span><span class="p">],</span>
+            <span class="sa">f</span><span class="s2">"telluric_</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">_ivar"</span><span class="p">:</span> <span class="n">data</span><span class="p">[</span><span class="s2">"ivar"</span><span class="p">],</span>
+            <span class="sa">f</span><span class="s2">"telluric_</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">_mask"</span><span class="p">:</span> <span class="n">data</span><span class="p">[</span><span class="s2">"mask"</span><span class="p">],</span>
+        <span class="p">}</span>
+
+    <span class="n">products_out</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
+    <span class="k">if</span> <span class="n">empirical</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">products_out</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">_candidate</span><span class="p">(</span><span class="s2">"empirical"</span><span class="p">,</span> <span class="n">empirical</span><span class="p">))</span>
+    <span class="k">if</span> <span class="n">grid</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">products_out</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">_candidate</span><span class="p">(</span><span class="s2">"grid"</span><span class="p">,</span> <span class="n">grid</span><span class="p">))</span>
+    <span class="n">products_out</span><span class="o">.</span><span class="n">update</span><span class="p">(</span>
+        <span class="p">{</span>
+            <span class="s2">"telluric"</span><span class="p">:</span> <span class="n">table</span><span class="p">,</span>
+            <span class="s2">"telluric_wave"</span><span class="p">:</span> <span class="n">selected</span><span class="p">[</span><span class="s2">"wave"</span><span class="p">],</span>
+            <span class="s2">"telluric_transmission"</span><span class="p">:</span> <span class="n">selected</span><span class="p">[</span><span class="s2">"transmission"</span><span class="p">],</span>
+            <span class="s2">"telluric_flux"</span><span class="p">:</span> <span class="n">selected</span><span class="p">[</span><span class="s2">"flux"</span><span class="p">],</span>
+            <span class="s2">"telluric_var"</span><span class="p">:</span> <span class="n">selected</span><span class="p">[</span><span class="s2">"var"</span><span class="p">],</span>
+            <span class="s2">"telluric_ivar"</span><span class="p">:</span> <span class="n">selected</span><span class="p">[</span><span class="s2">"ivar"</span><span class="p">],</span>
+            <span class="s2">"telluric_mask"</span><span class="p">:</span> <span class="n">selected</span><span class="p">[</span><span class="s2">"mask"</span><span class="p">],</span>
+        <span class="p">}</span>
+    <span class="p">)</span>
+
+    <span class="n">n_corrected</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span>
+        <span class="nb">sum</span><span class="p">(</span><span class="mi">1</span> <span class="k">for</span> <span class="n">j</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">flux</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">1</span><span class="p">])</span> <span class="k">if</span> <span class="n">selected</span><span class="p">[</span><span class="s2">"mask"</span><span class="p">][:,</span> <span class="n">j</span><span class="p">]</span><span class="o">.</span><span class="n">any</span><span class="p">())</span>
+    <span class="p">)</span>
+    <span class="n">transmission_figure</span> <span class="o">=</span> <span class="n">_telluric_transmission_figure</span><span class="p">(</span>
+        <span class="n">wave_soln</span><span class="p">,</span>
+        <span class="n">objects</span><span class="p">,</span>
+        <span class="n">empirical</span><span class="p">[</span><span class="s2">"transmission"</span><span class="p">]</span> <span class="k">if</span> <span class="n">empirical</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="n">np</span><span class="o">.</span><span class="n">full_like</span><span class="p">(</span><span class="n">flux</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">nan</span><span class="p">),</span>
+        <span class="n">grid</span><span class="p">[</span><span class="s2">"transmission"</span><span class="p">]</span> <span class="k">if</span> <span class="n">grid</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="n">np</span><span class="o">.</span><span class="n">full_like</span><span class="p">(</span><span class="n">flux</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">nan</span><span class="p">),</span>
+    <span class="p">)</span>
+    <span class="n">spectra_figure</span> <span class="o">=</span> <span class="n">_telluric_spectra_figure</span><span class="p">(</span>
+        <span class="n">wave_soln</span><span class="p">,</span> <span class="n">objects</span><span class="p">,</span> <span class="n">flux</span><span class="p">,</span> <span class="n">selected</span><span class="p">[</span><span class="s2">"flux"</span><span class="p">]</span>
+    <span class="p">)</span>
+
+    <span class="k">return</span> <span class="n">StepResult</span><span class="p">(</span>
+        <span class="n">products</span><span class="o">=</span><span class="n">products_out</span><span class="p">,</span>
+        <span class="n">meta</span><span class="o">=</span><span class="p">{</span>
+            <span class="s2">"telluric_method"</span><span class="p">:</span> <span class="n">active</span><span class="p">,</span>
+            <span class="s2">"n_objects_telluric_corrected"</span><span class="p">:</span> <span class="n">n_corrected</span><span class="p">,</span>
+            <span class="s2">"telluric_available_empirical"</span><span class="p">:</span> <span class="nb">bool</span><span class="p">(</span><span class="n">has_empirical</span><span class="p">),</span>
+            <span class="s2">"telluric_available_grid"</span><span class="p">:</span> <span class="nb">bool</span><span class="p">(</span><span class="n">has_grid</span><span class="p">),</span>
+        <span class="p">},</span>
+        <span class="n">plots</span><span class="o">=</span><span class="p">{</span>
+            <span class="s2">"telluric_transmission"</span><span class="p">:</span> <span class="n">transmission_figure</span><span class="p">,</span>
+            <span class="s2">"telluric_spectra"</span><span class="p">:</span> <span class="n">spectra_figure</span><span class="p">,</span>
+        <span class="p">},</span>
+    <span class="p">)</span>
+</pre></div>
+</div>
+<p>The pure array algorithms in <code>onfire/core/telluric.py</code>:</p>
+<div class="code-ref"><div class="code-label">onfire/core/telluric.py:109</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">empirical_transmission</span><span class="p">(</span>
+    <span class="n">wave</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">standard_flux</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">a0v_flux</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">continuum_order</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">6</span><span class="p">,</span>
+    <span class="n">gpm</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">floor</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="n">_TRANSMISSION_FLOOR</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">TelluricCorrection</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Derive atmospheric transmission from an observed A0V standard star.</span>
+
+<span class="sd">    The ratio of the observed standard spectrum to its intrinsic A0V</span>
+<span class="sd">    photosphere is the product of the smooth instrument response and the</span>
+<span class="sd">    atmospheric transmission. A robust smooth continuum is divided out to</span>
+<span class="sd">    isolate the transmission, so the absolute scaling, exposure time, and</span>
+<span class="sd">    sampling of the observed spectrum drop out.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        wave: Wavelength grid in Angstroms.</span>
+<span class="sd">        standard_flux: Observed standard-star spectrum (counts or flux).</span>
+<span class="sd">        a0v_flux: Intrinsic A0V template flux on the same wavelength grid.</span>
+<span class="sd">        continuum_order: Polynomial order of the smooth response model.</span>
+<span class="sd">        gpm: Optional good-pixel mask.</span>
+<span class="sd">        floor: Lower clip applied to the transmission.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        The empirical :class:`TelluricCorrection`.</span>
+<span class="sd">    """</span>
+    <span class="n">wave</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">wave</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">standard_flux</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">standard_flux</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">a0v_flux</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">a0v_flux</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="k">with</span> <span class="n">np</span><span class="o">.</span><span class="n">errstate</span><span class="p">(</span><span class="n">invalid</span><span class="o">=</span><span class="s2">"ignore"</span><span class="p">,</span> <span class="n">divide</span><span class="o">=</span><span class="s2">"ignore"</span><span class="p">):</span>
+        <span class="n">ratio</span> <span class="o">=</span> <span class="n">standard_flux</span> <span class="o">/</span> <span class="n">a0v_flux</span>
+
+    <span class="n">good</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">ratio</span><span class="p">)</span>
+        <span class="o">&amp;</span> <span class="p">(</span><span class="n">ratio</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">)</span>
+        <span class="o">&amp;</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">wave</span><span class="p">)</span>
+        <span class="o">&amp;</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">a0v_flux</span><span class="p">)</span>
+        <span class="o">&amp;</span> <span class="p">(</span><span class="n">a0v_flux</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">)</span>
+    <span class="p">)</span>
+    <span class="k">if</span> <span class="n">gpm</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">good</span> <span class="o">&amp;=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">gpm</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">bool</span><span class="p">)</span>
+
+    <span class="n">continuum</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">_robust_log_continuum</span><span class="p">(</span>
+        <span class="n">_normalized_log_wave</span><span class="p">(</span><span class="n">wave</span><span class="p">),</span> <span class="n">ratio</span><span class="p">,</span> <span class="n">order</span><span class="o">=</span><span class="nb">int</span><span class="p">(</span><span class="n">continuum_order</span><span class="p">),</span> <span class="n">gpm</span><span class="o">=</span><span class="n">good</span>
+    <span class="p">)</span>
+    <span class="k">with</span> <span class="n">np</span><span class="o">.</span><span class="n">errstate</span><span class="p">(</span><span class="n">invalid</span><span class="o">=</span><span class="s2">"ignore"</span><span class="p">,</span> <span class="n">divide</span><span class="o">=</span><span class="s2">"ignore"</span><span class="p">):</span>
+        <span class="n">transmission</span> <span class="o">=</span> <span class="n">ratio</span> <span class="o">/</span> <span class="n">continuum</span>
+    <span class="n">finite</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">transmission</span><span class="p">)</span>
+    <span class="n">clipped</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">clip</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">finite</span><span class="p">,</span> <span class="n">transmission</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">),</span> <span class="n">floor</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">)</span>
+    <span class="n">residual</span> <span class="o">=</span> <span class="p">(</span><span class="n">transmission</span> <span class="o">-</span> <span class="n">clipped</span><span class="p">)[</span><span class="n">finite</span> <span class="o">&amp;</span> <span class="n">good</span><span class="p">]</span>
+    <span class="n">rms</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">sqrt</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">residual</span><span class="o">**</span><span class="mi">2</span><span class="p">)))</span> <span class="k">if</span> <span class="n">residual</span><span class="o">.</span><span class="n">size</span> <span class="k">else</span> <span class="nb">float</span><span class="p">(</span><span class="s2">"nan"</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">TelluricCorrection</span><span class="p">(</span>
+        <span class="n">wave</span><span class="o">=</span><span class="n">wave</span><span class="p">,</span>
+        <span class="n">transmission</span><span class="o">=</span><span class="n">clipped</span><span class="p">,</span>
+        <span class="n">mask</span><span class="o">=</span><span class="n">good</span> <span class="o">&amp;</span> <span class="n">finite</span><span class="p">,</span>
+        <span class="n">method</span><span class="o">=</span><span class="s2">"empirical"</span><span class="p">,</span>
+        <span class="n">rms</span><span class="o">=</span><span class="n">rms</span><span class="p">,</span>
+    <span class="p">)</span>
+</pre></div>
+</div>
+<div class="code-ref"><div class="code-label">onfire/core/telluric.py:171</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">pca_transmission</span><span class="p">(</span>
+    <span class="n">wave</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">components</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">coeffs</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">floor</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="n">_TRANSMISSION_FLOOR</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Evaluate a PCA atmospheric model as a transmission spectrum.</span>
+
+<span class="sd">    The components linearly parameterize ``arcsinh(tau)`` where ``tau`` is the</span>
+<span class="sd">    optical depth. Component row 0 is the model mean; ``coeffs`` scales</span>
+<span class="sd">    components 1..n.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        wave: Wavelength grid (used only for shape and validation).</span>
+<span class="sd">        components: PCA component array of shape ``(ncomp, nwave)``.</span>
+<span class="sd">        coeffs: PCA coefficients of length ``ncomp - 1`` or fewer.</span>
+<span class="sd">        floor: Lower clip applied to the transmission.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        The model transmission on the component wavelength grid.</span>
+<span class="sd">    """</span>
+    <span class="n">components</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">components</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">coeffs</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">coeffs</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span><span class="o">.</span><span class="n">ravel</span><span class="p">()</span>
+    <span class="n">ncomp</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="n">coeffs</span><span class="o">.</span><span class="n">size</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">components</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
+    <span class="n">design</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">concatenate</span><span class="p">([[</span><span class="mf">1.0</span><span class="p">],</span> <span class="n">coeffs</span><span class="p">[:</span> <span class="n">ncomp</span> <span class="o">-</span> <span class="mi">1</span><span class="p">]])</span>
+    <span class="n">asinh_tau</span> <span class="o">=</span> <span class="n">design</span> <span class="o">@</span> <span class="n">components</span><span class="p">[:</span><span class="n">ncomp</span><span class="p">]</span>
+    <span class="n">tau</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">clip</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">sinh</span><span class="p">(</span><span class="n">asinh_tau</span><span class="p">),</span> <span class="mf">0.0</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">np</span><span class="o">.</span><span class="n">clip</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">exp</span><span class="p">(</span><span class="o">-</span><span class="n">tau</span><span class="p">),</span> <span class="n">floor</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">)</span>
+</pre></div>
+</div>
+<div class="code-ref"><div class="code-label">onfire/core/telluric.py:274</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">fit_telluric_grid</span><span class="p">(</span>
+    <span class="n">wave</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">flux</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">components</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">object_order</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">4</span><span class="p">,</span>
+    <span class="n">ncoeff</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">gpm</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">niter</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">4</span><span class="p">,</span>
+    <span class="n">absorption_threshold</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.9</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">TelluricCorrection</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Jointly fit an object continuum and a TelPCA transmission to a spectrum.</span>
+
+<span class="sd">    Used when no standard star is available: the smooth object continuum and the</span>
+<span class="sd">    atmospheric transmission are fit together. Each iteration fits a robust</span>
+<span class="sd">    polynomial continuum to ``flux / transmission``, then refits the PCA</span>
+<span class="sd">    coefficients to ``flux / continuum``.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        wave: Wavelength grid in Angstroms.</span>
+<span class="sd">        flux: Flux-calibrated science spectrum.</span>
+<span class="sd">        components: PCA component array of shape ``(ncomp, nwave)``.</span>
+<span class="sd">        object_order: Polynomial order of the object continuum model.</span>
+<span class="sd">        ncoeff: Number of PCA components to fit.</span>
+<span class="sd">        gpm: Optional good-pixel mask.</span>
+<span class="sd">        niter: Number of continuum/transmission refinement iterations.</span>
+<span class="sd">        absorption_threshold: Transmission below which pixels are excluded from</span>
+<span class="sd">            the continuum fit, so absorption features do not bias it.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        The grid :class:`TelluricCorrection`.</span>
+<span class="sd">    """</span>
+    <span class="n">wave</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">wave</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">flux</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">flux</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">components</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">components</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">ncoeff</span> <span class="o">=</span> <span class="n">components</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">-</span> <span class="mi">1</span> <span class="k">if</span> <span class="n">ncoeff</span> <span class="ow">is</span> <span class="kc">None</span> <span class="k">else</span> <span class="nb">int</span><span class="p">(</span><span class="n">ncoeff</span><span class="p">)</span>
+
+    <span class="n">base</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">wave</span><span class="p">)</span> <span class="o">&amp;</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">flux</span><span class="p">)</span> <span class="o">&amp;</span> <span class="p">(</span><span class="n">flux</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">gpm</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">base</span> <span class="o">&amp;=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">gpm</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">bool</span><span class="p">)</span>
+
+    <span class="n">x</span> <span class="o">=</span> <span class="n">_normalized_log_wave</span><span class="p">(</span><span class="n">wave</span><span class="p">)</span>
+    <span class="n">transmission</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">ones_like</span><span class="p">(</span><span class="n">wave</span><span class="p">)</span>
+    <span class="n">coeffs</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">ncoeff</span><span class="p">))</span>
+    <span class="n">rms</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="s2">"nan"</span><span class="p">)</span>
+    <span class="n">mask</span> <span class="o">=</span> <span class="n">base</span><span class="o">.</span><span class="n">copy</span><span class="p">()</span>
+    <span class="k">for</span> <span class="n">iteration</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="nb">int</span><span class="p">(</span><span class="n">niter</span><span class="p">))):</span>
+        <span class="k">with</span> <span class="n">np</span><span class="o">.</span><span class="n">errstate</span><span class="p">(</span><span class="n">invalid</span><span class="o">=</span><span class="s2">"ignore"</span><span class="p">,</span> <span class="n">divide</span><span class="o">=</span><span class="s2">"ignore"</span><span class="p">):</span>
+            <span class="n">corrected</span> <span class="o">=</span> <span class="n">flux</span> <span class="o">/</span> <span class="n">transmission</span>
+        <span class="k">if</span> <span class="n">iteration</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="n">continuum_gpm</span> <span class="o">=</span> <span class="n">base</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">continuum_gpm</span> <span class="o">=</span> <span class="n">base</span> <span class="o">&amp;</span> <span class="p">(</span><span class="n">transmission</span> <span class="o">&gt;=</span> <span class="nb">float</span><span class="p">(</span><span class="n">absorption_threshold</span><span class="p">))</span>
+        <span class="n">continuum</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">_robust_log_continuum</span><span class="p">(</span>
+            <span class="n">x</span><span class="p">,</span> <span class="n">corrected</span><span class="p">,</span> <span class="n">order</span><span class="o">=</span><span class="nb">int</span><span class="p">(</span><span class="n">object_order</span><span class="p">),</span> <span class="n">gpm</span><span class="o">=</span><span class="n">continuum_gpm</span>
+        <span class="p">)</span>
+        <span class="k">with</span> <span class="n">np</span><span class="o">.</span><span class="n">errstate</span><span class="p">(</span><span class="n">invalid</span><span class="o">=</span><span class="s2">"ignore"</span><span class="p">,</span> <span class="n">divide</span><span class="o">=</span><span class="s2">"ignore"</span><span class="p">):</span>
+            <span class="n">observed</span> <span class="o">=</span> <span class="n">flux</span> <span class="o">/</span> <span class="n">continuum</span>
+        <span class="n">coeffs</span><span class="p">,</span> <span class="n">mask</span><span class="p">,</span> <span class="n">rms</span> <span class="o">=</span> <span class="n">_fit_pca_coeffs</span><span class="p">(</span>
+            <span class="n">observed</span><span class="p">,</span> <span class="n">components</span><span class="p">,</span> <span class="n">ncoeff</span><span class="o">=</span><span class="n">ncoeff</span><span class="p">,</span> <span class="n">gpm</span><span class="o">=</span><span class="n">base</span>
+        <span class="p">)</span>
+        <span class="n">transmission</span> <span class="o">=</span> <span class="n">pca_transmission</span><span class="p">(</span><span class="n">wave</span><span class="p">,</span> <span class="n">components</span><span class="p">,</span> <span class="n">coeffs</span><span class="p">)</span>
+
+    <span class="k">return</span> <span class="n">TelluricCorrection</span><span class="p">(</span>
+        <span class="n">wave</span><span class="o">=</span><span class="n">wave</span><span class="p">,</span>
+        <span class="n">transmission</span><span class="o">=</span><span class="n">transmission</span><span class="p">,</span>
+        <span class="n">mask</span><span class="o">=</span><span class="n">mask</span><span class="p">,</span>
+        <span class="n">method</span><span class="o">=</span><span class="s2">"grid"</span><span class="p">,</span>
+        <span class="n">rms</span><span class="o">=</span><span class="n">rms</span><span class="p">,</span>
+        <span class="n">coeffs</span><span class="o">=</span><span class="n">coeffs</span><span class="p">,</span>
+    <span class="p">)</span>
+</pre></div>
+</div>
+<div class="code-ref"><div class="code-label">onfire/core/telluric.py:347</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">apply_telluric</span><span class="p">(</span>
+    <span class="n">wave</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">flux</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">correction</span><span class="p">:</span> <span class="n">TelluricCorrection</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">variance</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">floor</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="n">_TRANSMISSION_FLOOR</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span> <span class="o">|</span> <span class="kc">None</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span> <span class="o">|</span> <span class="kc">None</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""Divide a spectrum by an atmospheric transmission estimate.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        wave: Wavelength grid in Angstroms.</span>
+<span class="sd">        flux: Flux density to correct.</span>
+<span class="sd">        correction: The transmission estimate (empirical or grid).</span>
+<span class="sd">        variance: Optional variance of ``flux`` for propagation.</span>
+<span class="sd">        floor: Lower clip applied to the transmission before division.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        ``(corrected_flux, corrected_var, corrected_ivar, mask)``. The variance</span>
+<span class="sd">        transforms as ``var / T**2`` and the inverse variance as ``ivar * T**2``.</span>
+<span class="sd">    """</span>
+    <span class="n">wave</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">wave</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">flux</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">flux</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">transmission</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">clip</span><span class="p">(</span><span class="n">correction</span><span class="o">.</span><span class="n">evaluate</span><span class="p">(</span><span class="n">wave</span><span class="p">),</span> <span class="n">floor</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">)</span>
+    <span class="n">mask</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">flux</span><span class="p">)</span> <span class="o">&amp;</span> <span class="p">(</span><span class="n">transmission</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">)</span>
+    <span class="k">with</span> <span class="n">np</span><span class="o">.</span><span class="n">errstate</span><span class="p">(</span><span class="n">invalid</span><span class="o">=</span><span class="s2">"ignore"</span><span class="p">,</span> <span class="n">divide</span><span class="o">=</span><span class="s2">"ignore"</span><span class="p">):</span>
+        <span class="n">corrected</span> <span class="o">=</span> <span class="n">flux</span> <span class="o">/</span> <span class="n">transmission</span>
+    <span class="n">corrected</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">mask</span><span class="p">,</span> <span class="n">corrected</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">nan</span><span class="p">)</span>
+
+    <span class="k">if</span> <span class="n">variance</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">corrected</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="n">mask</span>
+
+    <span class="n">variance</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">variance</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">corrected_var</span> <span class="o">=</span> <span class="n">variance</span> <span class="o">/</span> <span class="n">transmission</span><span class="o">**</span><span class="mi">2</span>
+    <span class="k">with</span> <span class="n">np</span><span class="o">.</span><span class="n">errstate</span><span class="p">(</span><span class="n">invalid</span><span class="o">=</span><span class="s2">"ignore"</span><span class="p">,</span> <span class="n">divide</span><span class="o">=</span><span class="s2">"ignore"</span><span class="p">):</span>
+        <span class="n">corrected_ivar</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">corrected_var</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">,</span> <span class="mf">1.0</span> <span class="o">/</span> <span class="n">corrected_var</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">)</span>
+    <span class="n">corrected_var</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">mask</span><span class="p">,</span> <span class="n">corrected_var</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">nan</span><span class="p">)</span>
+    <span class="n">corrected_ivar</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">mask</span><span class="p">,</span> <span class="n">corrected_ivar</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">corrected</span><span class="p">,</span> <span class="n">corrected_var</span><span class="p">,</span> <span class="n">corrected_ivar</span><span class="p">,</span> <span class="n">mask</span>
+</pre></div>
+</div></details>
+</main>
+<script defer src="static/katex/katex.min.js"></script>
+<script defer src="static/katex/auto-render.min.js"></script>
+<script defer src="static/guide.js"></script>
+</body>
+</html>

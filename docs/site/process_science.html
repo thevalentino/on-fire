@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>process_science - onfire</title>
+<link rel="stylesheet" href="static/katex/katex.min.css">
+<link rel="stylesheet" href="static/pygments.css">
+<link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+<nav class="sidebar">
+<a class="brand" href="index.html">onfire</a>
+<ul><li><a href="index.html">Overview</a></li><li><a href="quickstart.html">Quickstart</a></li><li><a href="frame-table.html">Frame Table</a></li><li><a href="parameter-config.html">Parameter Config</a></li><li><a href="interactive.html">Interactive analysis</a></li></ul>
+<div class="group">Reduction steps</div><ul><li><a href="prep_calibrations.html">prep_calibrations</a></li><li><a href="trace_orders.html">trace_orders</a></li><li><a href="calibrate_wavelengths.html">calibrate_wavelengths</a></li><li><a href="fit_tilts.html">fit_tilts</a></li><li><a href="process_science.html" aria-current="page">process_science</a></li><li><a href="find_objects.html">find_objects</a></li><li><a href="subtract_sky.html">subtract_sky</a></li><li><a href="extract_1d.html">extract_1d</a></li><li><a href="flux_calibrate.html">flux_calibrate</a></li><li><a href="telluric_correct.html">telluric_correct</a></li><li><a href="coadd_orders.html">coadd_orders</a></li><li><a href="extinction_correct.html">extinction_correct</a></li></ul>
+</nav>
+<main>
+<h1>process_science</h1>
+<p class="purpose">Flat-field the science exposures, propagate their noise, and either difference nodded pairs (A minus B) or average stare frames.</p>
+<section><h2>Inputs and outputs</h2><p><strong>Reads</strong></p>
+<ul>
+<li><code>raw_science</code>: the stack of science exposures, shape <code>(nframes, nspec, nspat)</code>.</li>
+<li><code>flat_norm</code> (or <code>flat</code>) from <code>prep_calibrations</code>.</li>
+<li><code>bad_pixel_mask</code> from <code>prep_calibrations</code>, if present.</li>
+<li>Frame Table role loaded for this step: <code>science</code>.</li>
+</ul>
+<p><strong>Writes</strong></p>
+<p>| Product | Contents |
+|---------|----------|
+| <code>science</code> | The flat-fielded, combined science image. |
+| <code>science_var</code> | Its variance, propagated from photon and read noise. |
+| <code>science_ivar</code> | Inverse variance, <code>0</code> for bad pixels. |
+| <code>science_mask</code> | Boolean good-pixel mask. |</p>
+<p>Metadata recorded: <code>science_mode</code>, <code>n_science_frames</code>, <code>n_science_combined</code> and <code>n_science_bad_pixels</code>.</p>
+<p><strong>QA Artifact:</strong> <code>science</code>, a heatmap of the combined image.</p></section>
+<section><h2>How to call it</h2><p><strong>Command line</strong></p>
+<div class="codehilite"><pre><span></span><code>onfire<span class="w"> </span>reduce<span class="w"> </span>config.yaml<span class="w"> </span>--until<span class="w"> </span>process_science
+</code></pre></div>
+
+<p><strong>Parameter Config.</strong> The observing mode is a top-level key, because it also affects later steps:</p>
+<div class="codehilite"><pre><span></span><code><span class="nt">mode</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">pair_difference</span><span class="w">     </span><span class="c1"># or: stare (default pair_difference)</span>
+<span class="nt">steps</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">process_science</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">gain</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1.0</span><span class="w">             </span><span class="c1"># detector gain, electrons per count (default 1.0)</span>
+<span class="w">    </span><span class="nt">read_noise</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.0</span><span class="w">       </span><span class="c1"># detector read noise, electrons (default 0.0)</span>
+</code></pre></div>
+
+<p><strong>Python</strong></p>
+<div class="codehilite"><pre><span></span><code><span class="n">state</span> <span class="o">=</span> <span class="n">state</span><span class="o">.</span><span class="n">run_step</span><span class="p">(</span><span class="s2">"process_science"</span><span class="p">,</span> <span class="n">params</span><span class="o">=</span><span class="p">{</span><span class="s2">"mode"</span><span class="p">:</span> <span class="s2">"stare"</span><span class="p">})</span>
+</code></pre></div>
+
+<p>This step works on the whole detector; it takes no <code>order</code> argument. An unknown <code>mode</code> raises <code>ValueError</code>.</p></section>
+<section><h2>Figures</h2><figure class="pending"><div>figure pending: <code>process_science/science-frame</code></div><figcaption>Combined science image from the science QA Artifact</figcaption></figure></section>
+<details><summary>Numerical methods and idea</summary><p>The two observing modes differ in how the sky background is dealt with, and that decides what this step has to do.</p>
+<p><strong>Flat-fielding.</strong> Each exposure is divided by the normalised flat. Pixels where the flat is non-finite or not positive are set to zero instead of producing infinities.</p>
+<p><strong>Noise.</strong> The variance of a flat-fielded frame pushes the photon and read noise through that division:</p>
+<p>$$
+\sigma^2_\mathrm{frame} = \frac{\max(C, 0)/g + R^2}{F^2},
+$$</p>
+<p>where $C$ is the raw counts, $g$ is <code>gain</code>, $R$ is <code>read_noise</code> and $F$ is the flat response.</p>
+<p><strong>Pair Differencing</strong> (<code>mode: pair_difference</code>). Consecutive exposures are taken as nodded pairs, frames 1 and 2, 3 and 4, and so on. Each pair is flat-fielded and subtracted, $A - B$, which cancels the thermal and OH sky emission to first order. The pair variance is $\sigma^2_A + \sigma^2_B$. The differences are averaged, and with $N$ pairs the variance of that mean is</p>
+<p>$$
+\sigma^2_\mathrm{science} = \frac{1}{N^2} \sum_{p=1}^{N} \left(\sigma^2_{A,p} + \sigma^2_{B,p}\right).
+$$</p>
+<p>At least two frames are required. An odd final frame is not used.</p>
+<p><strong>Stare Mode</strong> (<code>mode: stare</code>). Each frame is flat-fielded and the frames are averaged, with the variance of the mean computed the same way. No sky is removed here, so the 2D sky model in <code>subtract_sky</code> has to do that work.</p>
+<p><strong>Masking.</strong> A pixel is good if the science value and variance are finite, the variance is positive and the pixel is not in <code>bad_pixel_mask</code>. The inverse variance is $1/\max(\sigma^2, 10^{-12})$ for good pixels and 0 otherwise.</p></details>
+<details><summary>Where this happens in the code</summary><p>The Step Engine chooses the mode and builds the products:</p>
+<div class="code-ref"><div class="code-label">onfire/core/engines.py:1029</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">process_science</span><span class="p">(</span>
+    <span class="n">products</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+    <span class="n">meta</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+    <span class="n">params</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">StepResult</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Flat-field science frames and prepare background subtraction (step 5).</span>
+
+<span class="sd">    The Parameter Config ``mode`` selects between Pair Differencing (``A - B``</span>
+<span class="sd">    of consecutive nodded exposures, which cancels the thermal and OH sky) and</span>
+<span class="sd">    Stare Mode (a single fixed pointing, whose sky is modeled downstream). The</span>
+<span class="sd">    output carries a variance array propagated from detector noise.</span>
+<span class="sd">    """</span>
+    <span class="n">raw</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"raw_science"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">raw</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="s2">"process_science requires a 'raw_science' product; "</span>
+            <span class="s2">"load raw science exposures first"</span>
+        <span class="p">)</span>
+    <span class="n">stack</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">raw</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">stack</span><span class="o">.</span><span class="n">ndim</span> <span class="o">==</span> <span class="mi">2</span><span class="p">:</span>
+        <span class="n">stack</span> <span class="o">=</span> <span class="n">stack</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">newaxis</span><span class="p">,</span> <span class="p">:,</span> <span class="p">:]</span>
+    <span class="k">if</span> <span class="n">stack</span><span class="o">.</span><span class="n">ndim</span> <span class="o">!=</span> <span class="mi">3</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">"raw_science must have shape (nframes, nspec, nspat), got </span><span class="si">{</span><span class="n">stack</span><span class="o">.</span><span class="n">shape</span><span class="si">}</span><span class="s2">"</span>
+        <span class="p">)</span>
+
+    <span class="n">flat</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"flat_norm"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">flat</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">flat</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"flat"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">flat</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="s2">"process_science requires a 'flat_norm' or 'flat' product; "</span>
+            <span class="s2">"run prep_calibrations first"</span>
+        <span class="p">)</span>
+    <span class="n">flat</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">flat</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+
+    <span class="n">gain</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"gain"</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">))</span>
+    <span class="n">read_noise</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"read_noise"</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">))</span>
+    <span class="n">mode</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"mode"</span><span class="p">,</span> <span class="s2">"pair_difference"</span><span class="p">))</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span>
+    <span class="n">nframes</span> <span class="o">=</span> <span class="n">stack</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+
+    <span class="k">if</span> <span class="n">mode</span> <span class="o">==</span> <span class="s2">"pair_difference"</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">nframes</span> <span class="o">&lt;</span> <span class="mi">2</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+                <span class="s2">"pair differencing requires at least two science frames; "</span>
+                <span class="sa">f</span><span class="s2">"got </span><span class="si">{</span><span class="n">nframes</span><span class="si">}</span><span class="s2">"</span>
+            <span class="p">)</span>
+        <span class="n">npairs</span> <span class="o">=</span> <span class="n">nframes</span> <span class="o">//</span> <span class="mi">2</span>
+        <span class="n">differences</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">empty</span><span class="p">((</span><span class="n">npairs</span><span class="p">,</span> <span class="o">*</span><span class="n">stack</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">1</span><span class="p">:]),</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+        <span class="n">variances</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">empty_like</span><span class="p">(</span><span class="n">differences</span><span class="p">)</span>
+        <span class="k">for</span> <span class="n">pair</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">npairs</span><span class="p">):</span>
+            <span class="n">a</span> <span class="o">=</span> <span class="n">stack</span><span class="p">[</span><span class="mi">2</span> <span class="o">*</span> <span class="n">pair</span><span class="p">]</span>
+            <span class="n">b</span> <span class="o">=</span> <span class="n">stack</span><span class="p">[</span><span class="mi">2</span> <span class="o">*</span> <span class="n">pair</span> <span class="o">+</span> <span class="mi">1</span><span class="p">]</span>
+            <span class="n">differences</span><span class="p">[</span><span class="n">pair</span><span class="p">]</span> <span class="o">=</span> <span class="n">pair_difference</span><span class="p">(</span>
+                <span class="n">flat_field</span><span class="p">(</span><span class="n">a</span><span class="p">,</span> <span class="n">flat</span><span class="p">),</span> <span class="n">flat_field</span><span class="p">(</span><span class="n">b</span><span class="p">,</span> <span class="n">flat</span><span class="p">)</span>
+            <span class="p">)</span>
+            <span class="n">variances</span><span class="p">[</span><span class="n">pair</span><span class="p">]</span> <span class="o">=</span> <span class="n">frame_variance</span><span class="p">(</span>
+                <span class="n">a</span><span class="p">,</span> <span class="n">flat</span><span class="p">,</span> <span class="n">gain</span><span class="o">=</span><span class="n">gain</span><span class="p">,</span> <span class="n">read_noise</span><span class="o">=</span><span class="n">read_noise</span>
+            <span class="p">)</span> <span class="o">+</span> <span class="n">frame_variance</span><span class="p">(</span><span class="n">b</span><span class="p">,</span> <span class="n">flat</span><span class="p">,</span> <span class="n">gain</span><span class="o">=</span><span class="n">gain</span><span class="p">,</span> <span class="n">read_noise</span><span class="o">=</span><span class="n">read_noise</span><span class="p">)</span>
+        <span class="n">science</span> <span class="o">=</span> <span class="n">combine_frames</span><span class="p">(</span><span class="n">differences</span><span class="p">)</span>
+        <span class="n">science_var</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">nanmean</span><span class="p">(</span><span class="n">variances</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span> <span class="o">/</span> <span class="nb">max</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">npairs</span><span class="p">)</span>
+        <span class="n">ncombined</span> <span class="o">=</span> <span class="n">npairs</span>
+    <span class="k">elif</span> <span class="n">mode</span> <span class="o">==</span> <span class="s2">"stare"</span><span class="p">:</span>
+        <span class="n">flat_frames</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">stack</span><span class="p">([</span><span class="n">flat_field</span><span class="p">(</span><span class="n">frame</span><span class="p">,</span> <span class="n">flat</span><span class="p">)</span> <span class="k">for</span> <span class="n">frame</span> <span class="ow">in</span> <span class="n">stack</span><span class="p">])</span>
+        <span class="n">science</span> <span class="o">=</span> <span class="n">combine_frames</span><span class="p">(</span><span class="n">flat_frames</span><span class="p">)</span>
+        <span class="n">frame_vars</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">stack</span><span class="p">(</span>
+            <span class="p">[</span>
+                <span class="n">frame_variance</span><span class="p">(</span><span class="n">frame</span><span class="p">,</span> <span class="n">flat</span><span class="p">,</span> <span class="n">gain</span><span class="o">=</span><span class="n">gain</span><span class="p">,</span> <span class="n">read_noise</span><span class="o">=</span><span class="n">read_noise</span><span class="p">)</span>
+                <span class="k">for</span> <span class="n">frame</span> <span class="ow">in</span> <span class="n">stack</span>
+            <span class="p">]</span>
+        <span class="p">)</span>
+        <span class="n">science_var</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">nanmean</span><span class="p">(</span><span class="n">frame_vars</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span> <span class="o">/</span> <span class="nb">max</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">nframes</span><span class="p">)</span>
+        <span class="n">ncombined</span> <span class="o">=</span> <span class="n">nframes</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">"unknown science mode </span><span class="si">{</span><span class="n">mode</span><span class="si">!r}</span><span class="s2">; expected 'pair_difference' or 'stare'"</span>
+        <span class="p">)</span>
+
+    <span class="n">science</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">science</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">science_var</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">science_var</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">good</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">science</span><span class="p">)</span> <span class="o">&amp;</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">science_var</span><span class="p">)</span> <span class="o">&amp;</span> <span class="p">(</span><span class="n">science_var</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">)</span>
+    <span class="n">bad</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"bad_pixel_mask"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">bad</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">good</span> <span class="o">&amp;=</span> <span class="o">~</span><span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">bad</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">bool</span><span class="p">)</span>
+    <span class="k">with</span> <span class="n">np</span><span class="o">.</span><span class="n">errstate</span><span class="p">(</span><span class="n">invalid</span><span class="o">=</span><span class="s2">"ignore"</span><span class="p">,</span> <span class="n">divide</span><span class="o">=</span><span class="s2">"ignore"</span><span class="p">):</span>
+        <span class="n">ivar</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span>
+            <span class="n">good</span><span class="p">,</span> <span class="mf">1.0</span> <span class="o">/</span> <span class="n">np</span><span class="o">.</span><span class="n">maximum</span><span class="p">(</span><span class="n">science_var</span><span class="p">,</span> <span class="mf">1e-12</span><span class="p">),</span> <span class="mf">0.0</span>
+        <span class="p">)</span>
+
+    <span class="n">figure</span> <span class="o">=</span> <span class="n">_simple_heatmap</span><span class="p">(</span><span class="n">science</span><span class="p">,</span> <span class="sa">f</span><span class="s2">"Science frame (</span><span class="si">{</span><span class="n">mode</span><span class="si">}</span><span class="s2">)"</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">StepResult</span><span class="p">(</span>
+        <span class="n">products</span><span class="o">=</span><span class="p">{</span>
+            <span class="s2">"science"</span><span class="p">:</span> <span class="n">science</span><span class="p">,</span>
+            <span class="s2">"science_var"</span><span class="p">:</span> <span class="n">science_var</span><span class="p">,</span>
+            <span class="s2">"science_ivar"</span><span class="p">:</span> <span class="n">ivar</span><span class="p">,</span>
+            <span class="s2">"science_mask"</span><span class="p">:</span> <span class="n">good</span><span class="p">,</span>
+        <span class="p">},</span>
+        <span class="n">meta</span><span class="o">=</span><span class="p">{</span>
+            <span class="s2">"science_mode"</span><span class="p">:</span> <span class="n">mode</span><span class="p">,</span>
+            <span class="s2">"n_science_frames"</span><span class="p">:</span> <span class="nb">int</span><span class="p">(</span><span class="n">nframes</span><span class="p">),</span>
+            <span class="s2">"n_science_combined"</span><span class="p">:</span> <span class="nb">int</span><span class="p">(</span><span class="n">ncombined</span><span class="p">),</span>
+            <span class="s2">"n_science_bad_pixels"</span><span class="p">:</span> <span class="nb">int</span><span class="p">((</span><span class="o">~</span><span class="n">good</span><span class="p">)</span><span class="o">.</span><span class="n">sum</span><span class="p">()),</span>
+        <span class="p">},</span>
+        <span class="n">plots</span><span class="o">=</span><span class="p">{</span><span class="s2">"science"</span><span class="p">:</span> <span class="n">figure</span><span class="p">},</span>
+    <span class="p">)</span>
+</pre></div>
+</div>
+<p>The pure array functions are in <code>onfire/core/science.py</code>:</p>
+<div class="code-ref"><div class="code-label">onfire/core/science.py:14</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">flat_field</span><span class="p">(</span><span class="n">image</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">flat</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Divide an exposure by the normalized flat-field response.</span>
+
+<span class="sd">    Pixels where the flat response is non-positive or non-finite are set to</span>
+<span class="sd">    zero rather than producing infinities.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        image: Raw exposure counts.</span>
+<span class="sd">        flat: Normalized flat-field response, same shape as ``image``.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        The flat-fielded exposure counts.</span>
+<span class="sd">    """</span>
+    <span class="n">image</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">image</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">flat</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">flat</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">good</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">flat</span><span class="p">)</span> <span class="o">&amp;</span> <span class="p">(</span><span class="n">flat</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">)</span> <span class="o">&amp;</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">image</span><span class="p">)</span>
+    <span class="k">with</span> <span class="n">np</span><span class="o">.</span><span class="n">errstate</span><span class="p">(</span><span class="n">invalid</span><span class="o">=</span><span class="s2">"ignore"</span><span class="p">,</span> <span class="n">divide</span><span class="o">=</span><span class="s2">"ignore"</span><span class="p">):</span>
+        <span class="n">out</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">divide</span><span class="p">(</span><span class="n">image</span><span class="p">,</span> <span class="n">flat</span><span class="p">,</span> <span class="n">out</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">zeros_like</span><span class="p">(</span><span class="n">image</span><span class="p">),</span> <span class="n">where</span><span class="o">=</span><span class="n">good</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">out</span>
+</pre></div>
+</div>
+<div class="code-ref"><div class="code-label">onfire/core/science.py:35</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">frame_variance</span><span class="p">(</span>
+    <span class="n">counts</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">flat</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">gain</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1.0</span><span class="p">,</span>
+    <span class="n">read_noise</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Propagate detector noise into the flat-fielded frame variance.</span>
+
+<span class="sd">    The Poisson variance of the raw counts (plus read noise) is pushed through</span>
+<span class="sd">    the division by the flat response.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        counts: Raw exposure counts.</span>
+<span class="sd">        flat: Normalized flat-field response, same shape as ``counts``.</span>
+<span class="sd">        gain: Detector gain, in electrons per count.</span>
+<span class="sd">        read_noise: Detector read noise, in electrons.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        The per-pixel variance of the flat-fielded frame.</span>
+<span class="sd">    """</span>
+    <span class="n">counts</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">counts</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">flat</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">flat</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">gain</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="nb">float</span><span class="p">(</span><span class="n">gain</span><span class="p">),</span> <span class="mf">1e-12</span><span class="p">)</span>
+    <span class="n">var_counts</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">clip</span><span class="p">(</span><span class="n">counts</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span> <span class="o">/</span> <span class="n">gain</span> <span class="o">+</span> <span class="nb">float</span><span class="p">(</span><span class="n">read_noise</span><span class="p">)</span> <span class="o">**</span> <span class="mi">2</span>
+    <span class="n">safe</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">flat</span><span class="p">)</span> <span class="o">&amp;</span> <span class="p">(</span><span class="n">flat</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">),</span> <span class="n">flat</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">var_counts</span> <span class="o">/</span> <span class="n">safe</span><span class="o">**</span><span class="mi">2</span>
+</pre></div>
+</div>
+<div class="code-ref"><div class="code-label">onfire/core/science.py:64</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">pair_difference</span><span class="p">(</span><span class="n">frame_a</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">frame_b</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Difference two nodded exposures to cancel the sky background."""</span>
+    <span class="k">return</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">frame_a</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span> <span class="o">-</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">frame_b</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+</pre></div>
+</div></details>
+</main>
+<script defer src="static/katex/katex.min.js"></script>
+<script defer src="static/katex/auto-render.min.js"></script>
+<script defer src="static/guide.js"></script>
+</body>
+</html>

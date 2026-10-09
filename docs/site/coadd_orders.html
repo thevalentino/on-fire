@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>coadd_orders - onfire</title>
+<link rel="stylesheet" href="static/katex/katex.min.css">
+<link rel="stylesheet" href="static/pygments.css">
+<link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+<nav class="sidebar">
+<a class="brand" href="index.html">onfire</a>
+<ul><li><a href="index.html">Overview</a></li><li><a href="quickstart.html">Quickstart</a></li><li><a href="frame-table.html">Frame Table</a></li><li><a href="parameter-config.html">Parameter Config</a></li><li><a href="interactive.html">Interactive analysis</a></li></ul>
+<div class="group">Reduction steps</div><ul><li><a href="prep_calibrations.html">prep_calibrations</a></li><li><a href="trace_orders.html">trace_orders</a></li><li><a href="calibrate_wavelengths.html">calibrate_wavelengths</a></li><li><a href="fit_tilts.html">fit_tilts</a></li><li><a href="process_science.html">process_science</a></li><li><a href="find_objects.html">find_objects</a></li><li><a href="subtract_sky.html">subtract_sky</a></li><li><a href="extract_1d.html">extract_1d</a></li><li><a href="flux_calibrate.html">flux_calibrate</a></li><li><a href="telluric_correct.html">telluric_correct</a></li><li><a href="coadd_orders.html" aria-current="page">coadd_orders</a></li><li><a href="extinction_correct.html">extinction_correct</a></li></ul>
+</nav>
+<main>
+<h1>coadd_orders</h1>
+<p class="purpose">Splice the calibrated spectra of the individual orders into one continuous spectrum, combining the overlaps by inverse-variance weighting.</p>
+<section><h2>Inputs and outputs</h2><p><strong>Reads</strong></p>
+<ul>
+<li><code>wave_soln</code> from <code>calibrate_wavelengths</code> and <code>objects</code> from <code>find_objects</code>.</li>
+<li>The spectra to combine: <code>telluric_flux</code>, <code>telluric_var</code> and <code>telluric_mask</code> from <code>telluric_correct</code> if present, otherwise <code>flux</code>, <code>flux_var</code> and <code>flux_mask</code> from <code>flux_calibrate</code>.</li>
+<li>No Frame Table role is loaded for this step.</li>
+</ul>
+<p><strong>Writes</strong></p>
+<p>| Product | Contents |
+|---------|----------|
+| <code>coadd_wave</code> | Wavelength grid of the combined spectrum, in Angstroms. |
+| <code>coadd_flux</code>, <code>coadd_var</code>, <code>coadd_ivar</code> | Flux density, variance and inverse variance. |
+| <code>coadd_mask</code> | Boolean mask of valid samples. |</p>
+<p>Metadata recorded: <code>n_coadd_orders</code>, <code>n_coadd_points</code> and <code>coadd_obj_id</code>.</p>
+<p><strong>QA Artifact:</strong> <code>coadd_orders</code>, the combined spectrum with its uncertainty.</p>
+<p>This step combines every order into one product, so it is a cross-order step: if any order is Stale, the whole coadd is Stale and cannot be trimmed order by order at Commit.</p></section>
+<section><h2>How to call it</h2><p><strong>Command line</strong></p>
+<div class="codehilite"><pre><span></span><code>onfire<span class="w"> </span>reduce<span class="w"> </span>config.yaml<span class="w"> </span>--until<span class="w"> </span>coadd_orders
+</code></pre></div>
+
+<p><strong>Parameter Config</strong></p>
+<div class="codehilite"><pre><span></span><code><span class="nt">steps</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">coadd_orders</span><span class="p">:</span>
+<span class="w">    </span><span class="c1"># obj_id: 3     # combine only this object (default: the highest-S/N object of each order)</span>
+</code></pre></div>
+
+<p><strong>Python</strong></p>
+<div class="codehilite"><pre><span></span><code><span class="n">clone</span> <span class="o">=</span> <span class="n">baseline</span><span class="o">.</span><span class="n">run_step</span><span class="p">(</span><span class="s2">"coadd_orders"</span><span class="p">,</span> <span class="n">clone</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="n">fig</span> <span class="o">=</span> <span class="n">baseline</span><span class="o">.</span><span class="n">compare</span><span class="p">(</span><span class="n">clone</span><span class="p">,</span> <span class="s2">"coadd_orders"</span><span class="p">)</span>
+</code></pre></div>
+
+<p>This step takes no <code>order</code> argument.</p>
+<p><strong>Choosing the object.</strong> By default one object is taken from each order, the one with the highest S/N in the <code>objects</code> table. Giving <code>obj_id</code> restricts the candidates to that one object. Because <code>find_objects</code> numbers objects uniquely across all orders, a given <code>obj_id</code> belongs to a single order, so the coadd then contains only that order. <strong>To verify:</strong> whether that is the intended use of <code>obj_id</code>.</p></section>
+<section><h2>Figures</h2><figure class="pending"><div>figure pending: <code>coadd_orders/coadd</code></div><figcaption>Combined spectrum and its uncertainty from the coadd_orders QA Artifact</figcaption></figure></section>
+<details><summary>Numerical methods and idea</summary><p>Neighbouring echelle orders overlap slightly in wavelength, so the same part of the spectrum is measured twice with different noise. The step merges all orders onto one wavelength grid and weights each measurement by how well it is known.</p>
+<ol>
+<li>For each order, samples with a non-finite wavelength or flux, a masked sample, or a non-positive variance are dropped. Each remaining sample gets the weight $w = 1/\sigma^2$.</li>
+<li>The output grid is regular, from the shortest to the longest wavelength present, with a step equal to the <strong>finest</strong> median pixel spacing among the orders.</li>
+<li>Every sample is assigned to the bin containing its wavelength. No resampling or interpolation is done. The samples are used as measured.</li>
+<li>In each bin the combined flux, variance and inverse variance are</li>
+</ol>
+<p>$$
+\bar f = \frac{\sum_i w_i f_i}{\sum_i w_i}, \qquad
+\sigma^2 = \frac{1}{\sum_i w_i}, \qquad
+\text{ivar} = \sum_i w_i .
+$$</p>
+<p>Bins that received no samples are left out of the output, so <code>coadd_wave</code> is not necessarily a gapless grid.</p>
+<p>If a variance array is missing, every sample is weighted equally.</p></details>
+<details><summary>Where this happens in the code</summary><p>The Step Engine chooses the spectra and the object of each order:</p>
+<div class="code-ref"><div class="code-label">onfire/core/engines.py:2982</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">coadd_orders</span><span class="p">(</span>
+    <span class="n">products</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+    <span class="n">meta</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+    <span class="n">params</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">StepResult</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Splice and coadd overlapping calibrated orders (reduction step 11).</span>
+
+<span class="sd">    The best object of every order (highest S/N, or the one matching</span>
+<span class="sd">    ``params['obj_id']``) is taken from the telluric-corrected spectra when</span>
+<span class="sd">    available and otherwise from the flux-calibrated spectra, then combined into</span>
+<span class="sd">    a single continuous 1D spectrum spanning the full FIRE range.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        products: State products. Requires ``wave_soln``, ``objects`` and a</span>
+<span class="sd">            flux-calibrated spectra product (``telluric_flux``/``flux``).</span>
+<span class="sd">        meta: State metadata (unused).</span>
+<span class="sd">        params: Algorithmic parameters, including an optional ``obj_id`` target.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        A :class:`StepResult` with the 1D ``coadd_*`` products and a QA figure.</span>
+<span class="sd">    """</span>
+    <span class="n">wave_soln</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"wave_soln"</span><span class="p">)</span>
+    <span class="n">objects</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"objects"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">wave_soln</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="n">objects</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="s2">"coadd_orders requires 'wave_soln' and 'objects' products; "</span>
+            <span class="s2">"run calibrate_wavelengths and find_objects first"</span>
+        <span class="p">)</span>
+    <span class="n">flux</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"telluric_flux"</span><span class="p">)</span>
+    <span class="n">flux_var</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"telluric_var"</span><span class="p">)</span>
+    <span class="n">flux_mask</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"telluric_mask"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">flux</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">flux</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"flux"</span><span class="p">)</span>
+        <span class="n">flux_var</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"flux_var"</span><span class="p">)</span>
+        <span class="n">flux_mask</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"flux_mask"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">flux</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="s2">"coadd_orders requires a flux-calibrated spectra product "</span>
+            <span class="s2">"('telluric_flux' or 'flux'); run flux_calibrate first"</span>
+        <span class="p">)</span>
+    <span class="n">wave_soln</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">wave_soln</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">flux</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">flux</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">flux_var</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">flux_var</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span> <span class="k">if</span> <span class="n">flux_var</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="kc">None</span>
+    <span class="p">)</span>
+    <span class="n">flux_mask</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">flux_mask</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">bool</span><span class="p">)</span> <span class="k">if</span> <span class="n">flux_mask</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="kc">None</span>
+    <span class="p">)</span>
+
+    <span class="n">obj_id</span> <span class="o">=</span> <span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"obj_id"</span><span class="p">)</span>
+    <span class="n">obj_id</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">obj_id</span><span class="p">)</span> <span class="k">if</span> <span class="n">obj_id</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="kc">None</span>
+    <span class="n">selected</span> <span class="o">=</span> <span class="n">_select_order_object</span><span class="p">(</span><span class="n">objects</span><span class="p">,</span> <span class="n">obj_id</span><span class="o">=</span><span class="n">obj_id</span><span class="p">)</span>
+
+    <span class="n">waves</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="n">fluxes</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="n">variances</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="n">masks</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="n">contributing</span><span class="p">:</span> <span class="nb">set</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+    <span class="k">for</span> <span class="n">index</span><span class="p">,</span> <span class="n">order</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">FIRE_ORDER_NUMBERS</span><span class="p">):</span>
+        <span class="n">order</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">order</span><span class="p">)</span>
+        <span class="n">column</span> <span class="o">=</span> <span class="n">selected</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">order</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">column</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">continue</span>
+        <span class="n">wave</span> <span class="o">=</span> <span class="n">wave_soln</span><span class="p">[:,</span> <span class="n">index</span><span class="p">]</span>
+        <span class="n">segment_flux</span> <span class="o">=</span> <span class="n">flux</span><span class="p">[:,</span> <span class="n">column</span><span class="p">]</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">np</span><span class="o">.</span><span class="n">any</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">segment_flux</span><span class="p">)):</span>
+            <span class="k">continue</span>
+        <span class="n">waves</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">wave</span><span class="p">)</span>
+        <span class="n">fluxes</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">segment_flux</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">flux_var</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">variances</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">flux_var</span><span class="p">[:,</span> <span class="n">column</span><span class="p">])</span>
+        <span class="k">if</span> <span class="n">flux_mask</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">masks</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">flux_mask</span><span class="p">[:,</span> <span class="n">column</span><span class="p">])</span>
+        <span class="n">contributing</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">order</span><span class="p">)</span>
+
+    <span class="n">coadd</span> <span class="o">=</span> <span class="n">coadd_order_spectra</span><span class="p">(</span>
+        <span class="n">waves</span><span class="p">,</span>
+        <span class="n">fluxes</span><span class="p">,</span>
+        <span class="n">variances</span> <span class="k">if</span> <span class="n">flux_var</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">masks</span> <span class="k">if</span> <span class="n">flux_mask</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">figure</span> <span class="o">=</span> <span class="n">_coadd_figure</span><span class="p">(</span><span class="n">coadd</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">StepResult</span><span class="p">(</span>
+        <span class="n">products</span><span class="o">=</span><span class="p">{</span>
+            <span class="s2">"coadd_wave"</span><span class="p">:</span> <span class="n">coadd</span><span class="o">.</span><span class="n">wave</span><span class="p">,</span>
+            <span class="s2">"coadd_flux"</span><span class="p">:</span> <span class="n">coadd</span><span class="o">.</span><span class="n">flux</span><span class="p">,</span>
+            <span class="s2">"coadd_var"</span><span class="p">:</span> <span class="n">coadd</span><span class="o">.</span><span class="n">var</span><span class="p">,</span>
+            <span class="s2">"coadd_ivar"</span><span class="p">:</span> <span class="n">coadd</span><span class="o">.</span><span class="n">ivar</span><span class="p">,</span>
+            <span class="s2">"coadd_mask"</span><span class="p">:</span> <span class="n">coadd</span><span class="o">.</span><span class="n">mask</span><span class="p">,</span>
+        <span class="p">},</span>
+        <span class="n">meta</span><span class="o">=</span><span class="p">{</span>
+            <span class="s2">"n_coadd_orders"</span><span class="p">:</span> <span class="nb">len</span><span class="p">(</span><span class="n">contributing</span><span class="p">),</span>
+            <span class="s2">"n_coadd_points"</span><span class="p">:</span> <span class="nb">int</span><span class="p">(</span><span class="n">coadd</span><span class="o">.</span><span class="n">npoints</span><span class="p">),</span>
+            <span class="s2">"coadd_obj_id"</span><span class="p">:</span> <span class="n">obj_id</span><span class="p">,</span>
+        <span class="p">},</span>
+        <span class="n">plots</span><span class="o">=</span><span class="p">{</span><span class="s2">"coadd_orders"</span><span class="p">:</span> <span class="n">figure</span><span class="p">},</span>
+    <span class="p">)</span>
+</pre></div>
+</div>
+<div class="code-ref"><div class="code-label">onfire/core/engines.py:2959</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">_select_order_object</span><span class="p">(</span>
+    <span class="n">objects</span><span class="p">:</span> <span class="n">Table</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">obj_id</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""Map order number to the best (highest S/N) object column for coaddition."""</span>
+    <span class="n">orders</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">objects</span><span class="p">[</span><span class="s2">"order"</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">int</span><span class="p">)</span>
+    <span class="k">if</span> <span class="s2">"snr"</span> <span class="ow">in</span> <span class="n">objects</span><span class="o">.</span><span class="n">colnames</span><span class="p">:</span>
+        <span class="n">snr</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">objects</span><span class="p">[</span><span class="s2">"snr"</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">snr</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">ones</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">objects</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">obj_id</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="s2">"obj_id"</span> <span class="ow">in</span> <span class="n">objects</span><span class="o">.</span><span class="n">colnames</span><span class="p">:</span>
+        <span class="n">candidates</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">objects</span><span class="p">[</span><span class="s2">"obj_id"</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">int</span><span class="p">)</span> <span class="o">==</span> <span class="nb">int</span><span class="p">(</span><span class="n">obj_id</span><span class="p">))[</span><span class="mi">0</span><span class="p">]</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">candidates</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">objects</span><span class="p">))</span>
+    <span class="n">best</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
+    <span class="k">for</span> <span class="n">column</span> <span class="ow">in</span> <span class="n">candidates</span><span class="p">:</span>
+        <span class="n">order</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">orders</span><span class="p">[</span><span class="n">column</span><span class="p">])</span>
+        <span class="k">if</span> <span class="n">order</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">best</span> <span class="ow">or</span> <span class="n">snr</span><span class="p">[</span><span class="n">column</span><span class="p">]</span> <span class="o">&gt;</span> <span class="n">snr</span><span class="p">[</span><span class="n">best</span><span class="p">[</span><span class="n">order</span><span class="p">]]:</span>
+            <span class="n">best</span><span class="p">[</span><span class="n">order</span><span class="p">]</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">column</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">best</span>
+</pre></div>
+</div>
+<p>The pure array algorithm in <code>onfire/core/coadd.py</code>:</p>
+<div class="code-ref"><div class="code-label">onfire/core/coadd.py:59</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">coadd_order_spectra</span><span class="p">(</span>
+    <span class="n">waves</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">],</span>
+    <span class="n">fluxes</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">],</span>
+    <span class="n">variances</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">masks</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">CoaddedSpectrum</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Splice and inverse-variance weight overlapping order spectra.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        waves: One wavelength grid per order, in Angstroms.</span>
+<span class="sd">        fluxes: One flux density array per order.</span>
+<span class="sd">        variances: Optional variance array per order. When omitted every sample</span>
+<span class="sd">            is weighted equally.</span>
+<span class="sd">        masks: Optional good-sample mask per order.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        The :class:`CoaddedSpectrum` on a common wavelength grid.</span>
+
+<span class="sd">    Raises:</span>
+<span class="sd">        ValueError: If the segment lists have differing lengths.</span>
+<span class="sd">    """</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">waves</span><span class="p">)</span> <span class="o">==</span> <span class="nb">len</span><span class="p">(</span><span class="n">fluxes</span><span class="p">)):</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">"waves and fluxes must have the same number of segments"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">variances</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="nb">len</span><span class="p">(</span><span class="n">variances</span><span class="p">)</span> <span class="o">!=</span> <span class="nb">len</span><span class="p">(</span><span class="n">waves</span><span class="p">):</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">"variances must have one entry per wavelength segment"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">masks</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="nb">len</span><span class="p">(</span><span class="n">masks</span><span class="p">)</span> <span class="o">!=</span> <span class="nb">len</span><span class="p">(</span><span class="n">waves</span><span class="p">):</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">"masks must have one entry per wavelength segment"</span><span class="p">)</span>
+
+    <span class="n">norders</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">waves</span><span class="p">)</span>
+    <span class="n">all_wave</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="n">all_flux</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="n">all_weight</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="n">clean_waves</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="p">(</span><span class="n">wave</span><span class="p">,</span> <span class="n">flux</span><span class="p">)</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="nb">zip</span><span class="p">(</span><span class="n">waves</span><span class="p">,</span> <span class="n">fluxes</span><span class="p">)):</span>
+        <span class="n">wave</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">wave</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+        <span class="n">flux</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">flux</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+        <span class="n">good</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">wave</span><span class="p">)</span> <span class="o">&amp;</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">flux</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">masks</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">good</span> <span class="o">&amp;=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">masks</span><span class="p">[</span><span class="n">i</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">bool</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">variances</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">var</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">variances</span><span class="p">[</span><span class="n">i</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+            <span class="n">positive</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">var</span><span class="p">)</span> <span class="o">&amp;</span> <span class="p">(</span><span class="n">var</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">)</span>
+            <span class="n">good</span> <span class="o">&amp;=</span> <span class="n">positive</span>
+            <span class="n">weight</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">positive</span><span class="p">,</span> <span class="mf">1.0</span> <span class="o">/</span> <span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">positive</span><span class="p">,</span> <span class="n">var</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">),</span> <span class="mf">0.0</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">weight</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">ones_like</span><span class="p">(</span><span class="n">wave</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">good</span><span class="o">.</span><span class="n">any</span><span class="p">():</span>
+            <span class="k">continue</span>
+        <span class="n">clean_waves</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">wave</span><span class="p">[</span><span class="n">good</span><span class="p">])</span>
+        <span class="n">all_wave</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">wave</span><span class="p">[</span><span class="n">good</span><span class="p">])</span>
+        <span class="n">all_flux</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">flux</span><span class="p">[</span><span class="n">good</span><span class="p">])</span>
+        <span class="n">all_weight</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">weight</span><span class="p">[</span><span class="n">good</span><span class="p">])</span>
+
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">all_wave</span><span class="p">:</span>
+        <span class="n">empty</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([],</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">CoaddedSpectrum</span><span class="p">(</span>
+            <span class="n">wave</span><span class="o">=</span><span class="n">empty</span><span class="p">,</span>
+            <span class="n">flux</span><span class="o">=</span><span class="n">empty</span><span class="o">.</span><span class="n">copy</span><span class="p">(),</span>
+            <span class="n">var</span><span class="o">=</span><span class="n">empty</span><span class="o">.</span><span class="n">copy</span><span class="p">(),</span>
+            <span class="n">ivar</span><span class="o">=</span><span class="n">empty</span><span class="o">.</span><span class="n">copy</span><span class="p">(),</span>
+            <span class="n">mask</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([],</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">bool</span><span class="p">),</span>
+            <span class="n">norders</span><span class="o">=</span><span class="n">norders</span><span class="p">,</span>
+            <span class="n">npoints</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span>
+        <span class="p">)</span>
+
+    <span class="n">step</span> <span class="o">=</span> <span class="n">_grid_step</span><span class="p">(</span><span class="n">clean_waves</span><span class="p">)</span> <span class="ow">or</span> <span class="mf">1.0</span>
+    <span class="n">wave_flat</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">concatenate</span><span class="p">(</span><span class="n">all_wave</span><span class="p">)</span>
+    <span class="n">flux_flat</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">concatenate</span><span class="p">(</span><span class="n">all_flux</span><span class="p">)</span>
+    <span class="n">weight_flat</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">concatenate</span><span class="p">(</span><span class="n">all_weight</span><span class="p">)</span>
+
+    <span class="n">wave_min</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">wave_flat</span><span class="o">.</span><span class="n">min</span><span class="p">())</span>
+    <span class="n">wave_max</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">wave_flat</span><span class="o">.</span><span class="n">max</span><span class="p">())</span>
+    <span class="n">edges</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="n">wave_min</span><span class="p">,</span> <span class="n">wave_max</span> <span class="o">+</span> <span class="mf">1.5</span> <span class="o">*</span> <span class="n">step</span><span class="p">,</span> <span class="n">step</span><span class="p">)</span>
+    <span class="n">nbin</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">edges</span><span class="o">.</span><span class="n">size</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span>
+    <span class="n">centers</span> <span class="o">=</span> <span class="n">edges</span><span class="p">[:</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span> <span class="o">+</span> <span class="mf">0.5</span> <span class="o">*</span> <span class="n">step</span>
+
+    <span class="n">index</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">digitize</span><span class="p">(</span><span class="n">wave_flat</span><span class="p">,</span> <span class="n">edges</span><span class="p">)</span> <span class="o">-</span> <span class="mi">1</span>
+    <span class="n">valid</span> <span class="o">=</span> <span class="p">(</span><span class="n">index</span> <span class="o">&gt;=</span> <span class="mi">0</span><span class="p">)</span> <span class="o">&amp;</span> <span class="p">(</span><span class="n">index</span> <span class="o">&lt;</span> <span class="n">nbin</span><span class="p">)</span>
+    <span class="n">index</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">clip</span><span class="p">(</span><span class="n">index</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">nbin</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span>
+
+    <span class="n">summed_weight</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">bincount</span><span class="p">(</span><span class="n">index</span><span class="p">[</span><span class="n">valid</span><span class="p">],</span> <span class="n">weights</span><span class="o">=</span><span class="n">weight_flat</span><span class="p">[</span><span class="n">valid</span><span class="p">],</span> <span class="n">minlength</span><span class="o">=</span><span class="n">nbin</span><span class="p">)</span>
+    <span class="n">summed_flux</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">bincount</span><span class="p">(</span>
+        <span class="n">index</span><span class="p">[</span><span class="n">valid</span><span class="p">],</span> <span class="n">weights</span><span class="o">=</span><span class="p">(</span><span class="n">flux_flat</span> <span class="o">*</span> <span class="n">weight_flat</span><span class="p">)[</span><span class="n">valid</span><span class="p">],</span> <span class="n">minlength</span><span class="o">=</span><span class="n">nbin</span>
+    <span class="p">)</span>
+
+    <span class="n">occupied</span> <span class="o">=</span> <span class="n">summed_weight</span> <span class="o">&gt;</span> <span class="mi">0</span>
+    <span class="n">wave_out</span> <span class="o">=</span> <span class="n">centers</span><span class="p">[</span><span class="n">occupied</span><span class="p">]</span>
+    <span class="n">ivar_out</span> <span class="o">=</span> <span class="n">summed_weight</span><span class="p">[</span><span class="n">occupied</span><span class="p">]</span>
+    <span class="k">with</span> <span class="n">np</span><span class="o">.</span><span class="n">errstate</span><span class="p">(</span><span class="n">invalid</span><span class="o">=</span><span class="s2">"ignore"</span><span class="p">,</span> <span class="n">divide</span><span class="o">=</span><span class="s2">"ignore"</span><span class="p">):</span>
+        <span class="n">flux_out</span> <span class="o">=</span> <span class="n">summed_flux</span><span class="p">[</span><span class="n">occupied</span><span class="p">]</span> <span class="o">/</span> <span class="n">summed_weight</span><span class="p">[</span><span class="n">occupied</span><span class="p">]</span>
+        <span class="n">var_out</span> <span class="o">=</span> <span class="mf">1.0</span> <span class="o">/</span> <span class="n">summed_weight</span><span class="p">[</span><span class="n">occupied</span><span class="p">]</span>
+    <span class="n">mask</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">flux_out</span><span class="p">)</span> <span class="o">&amp;</span> <span class="p">(</span><span class="n">ivar_out</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">CoaddedSpectrum</span><span class="p">(</span>
+        <span class="n">wave</span><span class="o">=</span><span class="n">wave_out</span><span class="p">,</span>
+        <span class="n">flux</span><span class="o">=</span><span class="n">flux_out</span><span class="p">,</span>
+        <span class="n">var</span><span class="o">=</span><span class="n">var_out</span><span class="p">,</span>
+        <span class="n">ivar</span><span class="o">=</span><span class="n">ivar_out</span><span class="p">,</span>
+        <span class="n">mask</span><span class="o">=</span><span class="n">mask</span><span class="p">,</span>
+        <span class="n">norders</span><span class="o">=</span><span class="n">norders</span><span class="p">,</span>
+        <span class="n">npoints</span><span class="o">=</span><span class="nb">int</span><span class="p">(</span><span class="n">occupied</span><span class="o">.</span><span class="n">sum</span><span class="p">()),</span>
+    <span class="p">)</span>
+</pre></div>
+</div></details>
+</main>
+<script defer src="static/katex/katex.min.js"></script>
+<script defer src="static/katex/auto-render.min.js"></script>
+<script defer src="static/guide.js"></script>
+</body>
+</html>

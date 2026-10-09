@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fit_tilts - onfire</title>
+<link rel="stylesheet" href="static/katex/katex.min.css">
+<link rel="stylesheet" href="static/pygments.css">
+<link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+<nav class="sidebar">
+<a class="brand" href="index.html">onfire</a>
+<ul><li><a href="index.html">Overview</a></li><li><a href="quickstart.html">Quickstart</a></li><li><a href="frame-table.html">Frame Table</a></li><li><a href="parameter-config.html">Parameter Config</a></li><li><a href="interactive.html">Interactive analysis</a></li></ul>
+<div class="group">Reduction steps</div><ul><li><a href="prep_calibrations.html">prep_calibrations</a></li><li><a href="trace_orders.html">trace_orders</a></li><li><a href="calibrate_wavelengths.html">calibrate_wavelengths</a></li><li><a href="fit_tilts.html" aria-current="page">fit_tilts</a></li><li><a href="process_science.html">process_science</a></li><li><a href="find_objects.html">find_objects</a></li><li><a href="subtract_sky.html">subtract_sky</a></li><li><a href="extract_1d.html">extract_1d</a></li><li><a href="flux_calibrate.html">flux_calibrate</a></li><li><a href="telluric_correct.html">telluric_correct</a></li><li><a href="coadd_orders.html">coadd_orders</a></li><li><a href="extinction_correct.html">extinction_correct</a></li></ul>
+</nav>
+<main>
+<h1>fit_tilts</h1>
+<p class="purpose">Measure how arc lines lean across the slit in every order and fit a smooth two-dimensional model of that tilt.</p>
+<section><h2>Inputs and outputs</h2><p><strong>Reads</strong></p>
+<ul>
+<li><code>arc_image</code>, <code>arc_spectra</code>, <code>order_centers</code> and <code>order_halfwidths</code>, all produced by <code>calibrate_wavelengths</code>.</li>
+<li>Frame Table role loaded for this step: <code>arc</code>.</li>
+</ul>
+<p><strong>Writes</strong></p>
+<p>| Product | Contents |
+|---------|----------|
+| <code>tilts</code> | Table with one row per order: <code>nlines</code>, <code>rms</code>, <code>tilt_angle</code> and <code>masked</code>. |
+| <code>tilt_coeffs</code> | Legendre coefficients of each order's tilt surface. |
+| <code>tilt_surface_coeffs</code> | Coefficients of one global surface pooled across all orders. |
+| <code>tilt_measurements</code> | Every measurement: <code>order</code>, <code>spec_pixel</code>, <code>dspat</code>, <code>delta</code> and the fitted <code>model</code>. |</p>
+<p>An order is masked with the reason <code>no arc spectrum</code>, <code>too few arc lines for tilts</code> (fewer than three detected lines) or <code>tilt tracing failed</code> (fewer than four usable measurements).</p>
+<p><strong>QA Artifacts:</strong> <code>tilt_residuals</code> (fit residuals against dispersion pixel) and <code>tilt_map</code> (the tilt model for the first valid order).</p></section>
+<section><h2>How to call it</h2><p><strong>Command line</strong></p>
+<div class="codehilite"><pre><span></span><code>onfire<span class="w"> </span>reduce<span class="w"> </span>config.yaml<span class="w"> </span>--until<span class="w"> </span>fit_tilts
+</code></pre></div>
+
+<p><strong>Parameter Config</strong></p>
+<div class="codehilite"><pre><span></span><code><span class="nt">steps</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">fit_tilts</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">spec_order</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span><span class="w">         </span><span class="c1"># Legendre terms along the spectral axis (default 3)</span>
+<span class="w">    </span><span class="nt">spat_order</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4</span><span class="w">         </span><span class="c1"># Legendre terms along the spatial axis (default 4)</span>
+<span class="w">    </span><span class="nt">tilt_sigdetect</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10.0</span><span class="w">  </span><span class="c1"># line-detection threshold in noise sigma (default 10.0)</span>
+<span class="w">    </span><span class="nt">fwhm</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4.0</span><span class="w">             </span><span class="c1"># expected line FWHM in pixels (default 4.0)</span>
+<span class="w">    </span><span class="nt">tilt_maxshift</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3.0</span><span class="w">    </span><span class="c1"># largest line movement between neighbouring columns, in pixels (default 3.0)</span>
+<span class="w">    </span><span class="c1"># spat_scale: 10.0    # spatial normalisation in pixels; default is the median order half-width minus 2</span>
+</code></pre></div>
+
+<p><strong>Python</strong>, one order, on a State Clone:</p>
+<div class="codehilite"><pre><span></span><code><span class="n">clone</span> <span class="o">=</span> <span class="n">baseline</span><span class="o">.</span><span class="n">run_step</span><span class="p">(</span><span class="s2">"fit_tilts"</span><span class="p">,</span> <span class="n">params</span><span class="o">=</span><span class="p">{</span><span class="s2">"tilt_sigdetect"</span><span class="p">:</span> <span class="mf">7.0</span><span class="p">},</span> <span class="n">clone</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">order</span><span class="o">=</span><span class="mi">13</span><span class="p">)</span>
+<span class="n">fig</span> <span class="o">=</span> <span class="n">baseline</span><span class="o">.</span><span class="n">compare</span><span class="p">(</span><span class="n">clone</span><span class="p">,</span> <span class="s2">"fit_tilts"</span><span class="p">)</span>
+</code></pre></div>
+
+<p>A targeted run needs earlier tilt coefficients to refine. Without them <code>order=</code> has no effect and every order is fit.</p></section>
+<section><h2>Figures</h2><figure class="pending"><div>figure pending: <code>fit_tilts/tilt-map</code></div><figcaption>Tilt model of one order from the tilt_map QA Artifact</figcaption></figure>
+
+<figure class="pending"><div>figure pending: <code>fit_tilts/tilt-residuals</code></div><figcaption>Tilt-fit residuals from the tilt_residuals QA Artifact</figcaption></figure></section>
+<details><summary>Numerical methods and idea</summary><p>In a curved echelle image a line of constant wavelength is not exactly along the spatial direction. It leans, and the lean varies with position. Sky subtraction and extraction later need to follow that lean, so this step measures it from arc lines and models it.</p>
+<p><strong>1. Pick lines.</strong> In each order the arc spectrum is searched for lines above <code>tilt_sigdetect</code> noise sigma, using the same line detector as <code>calibrate_wavelengths</code>.</p>
+<p><strong>2. Trace each line across the slit.</strong> Starting at the order centre, each line's spectral position is followed one spatial column at a time in both directions. At each column the new position is the centroid of the positive flux within <code>tilt_maxshift</code> pixels of the previous column's position. A line is dropped if it has fewer than three samples, or drifts by more than $3\,\mathrm{fwhm} + 1$ pixels.</p>
+<p>Each sample is recorded as a pair: the spatial offset <code>dspat</code> from the order centre, and the spectral shift $\delta$ from the line's position at the centre.</p>
+<p><strong>3. Fit a surface.</strong> With the spectral pixel scaled by $n_\mathrm{spec} - 1$ and the spatial offset by <code>spat_scale</code>, the shift is fit with a two-dimensional Legendre surface:</p>
+<p>$$
+\frac{\delta}{n_\mathrm{spec}-1} \approx \sum_{j,k} c_{jk}\, P_j(s)\, P_k(u),
+\qquad
+s = \frac{\text{spec pixel}}{n_\mathrm{spec}-1}, \quad u = \frac{\text{dspat}}{\text{spat\_scale}},
+$$</p>
+<p>with <code>spec_order</code> terms in $j$ and <code>spat_order</code> terms in $k$, and 3-sigma robust rejection. The quoted tilt angle is the arctangent of the local slope $\partial\delta/\partial(\text{dspat})$ at the middle of the order.</p>
+<p><strong>4. Global surface.</strong> The measurements from all orders are also pooled into one global surface, stored as <code>tilt_surface_coeffs</code>.</p>
+<p><strong>Single-order re-runs (Cross-Order Regularization).</strong> With <code>order=</code> the target order is not fit freely. A low-order correction (one term per axis) to the global surface is fit to that order's residuals instead. A faint order then inherits the instrument-wide distortion instead of being dropped, and an order with fewer than four measurements uses the global surface unchanged.</p></details>
+<details><summary>Where this happens in the code</summary><p>The Step Engine:</p>
+<div class="code-ref"><div class="code-label">onfire/core/engines.py:844</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">fit_tilts</span><span class="p">(</span>
+    <span class="n">products</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+    <span class="n">meta</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+    <span class="n">params</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">StepResult</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Model 2D spectral line tilts across each order (reduction step 4).</span>
+
+<span class="sd">    Arc lines are traced across the spatial direction of every order and a 2D</span>
+<span class="sd">    Legendre surface of the spectral-position offset is fit. A global surface</span>
+<span class="sd">    pooled across all orders provides cross-order regularization when</span>
+<span class="sd">    ``params['order']`` targets a single order.</span>
+<span class="sd">    """</span>
+    <span class="n">arcimg</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"arc_image"</span><span class="p">)</span>
+    <span class="n">spectra</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"arc_spectra"</span><span class="p">)</span>
+    <span class="n">centers</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"order_centers"</span><span class="p">)</span>
+    <span class="n">widths</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"order_halfwidths"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">arcimg</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="n">spectra</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="n">centers</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="s2">"fit_tilts requires 'arc_image', 'arc_spectra' and 'order_centers' "</span>
+            <span class="s2">"products; run calibrate_wavelengths first"</span>
+        <span class="p">)</span>
+    <span class="n">nspec</span> <span class="o">=</span> <span class="n">arcimg</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+    <span class="n">spec_order</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"spec_order"</span><span class="p">,</span> <span class="mi">3</span><span class="p">))</span>
+    <span class="n">spat_order</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"spat_order"</span><span class="p">,</span> <span class="mi">4</span><span class="p">))</span>
+    <span class="n">sigdetect</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"tilt_sigdetect"</span><span class="p">,</span> <span class="mf">10.0</span><span class="p">))</span>
+    <span class="n">fwhm</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"fwhm"</span><span class="p">,</span> <span class="mf">4.0</span><span class="p">))</span>
+    <span class="n">maxshift</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"tilt_maxshift"</span><span class="p">,</span> <span class="mf">3.0</span><span class="p">))</span>
+    <span class="n">nterms</span> <span class="o">=</span> <span class="n">spec_order</span> <span class="o">*</span> <span class="n">spat_order</span>
+    <span class="n">finite_widths</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">widths</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)[</span><span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">widths</span><span class="p">)]</span>
+    <span class="n">spat_scale</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span>
+        <span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"spat_scale"</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">median</span><span class="p">(</span><span class="n">finite_widths</span><span class="p">)</span> <span class="o">-</span> <span class="mf">2.0</span> <span class="k">if</span> <span class="n">finite_widths</span><span class="o">.</span><span class="n">size</span> <span class="k">else</span> <span class="mf">10.0</span><span class="p">)</span>
+    <span class="p">)</span>
+    <span class="n">spat_scale</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="n">spat_scale</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">)</span>
+
+    <span class="n">previous_coeffs</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"tilt_coeffs"</span><span class="p">)</span>
+    <span class="n">previous_table</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"tilts"</span><span class="p">)</span>
+    <span class="n">target_index</span> <span class="o">=</span> <span class="n">_target_order_index</span><span class="p">(</span><span class="n">params</span><span class="p">)</span>
+    <span class="n">regen</span> <span class="o">=</span> <span class="n">target_index</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">previous_coeffs</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+
+    <span class="n">tilt_coeffs</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">full</span><span class="p">((</span><span class="n">FIRE_NORDERS</span><span class="p">,</span> <span class="n">nterms</span><span class="p">),</span> <span class="n">np</span><span class="o">.</span><span class="n">nan</span><span class="p">)</span>
+    <span class="n">table</span> <span class="o">=</span> <span class="n">_blank_tilt_table</span><span class="p">()</span>
+    <span class="k">if</span> <span class="n">regen</span><span class="p">:</span>
+        <span class="n">tilt_coeffs</span><span class="p">[:]</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">previous_coeffs</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">previous_table</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">for</span> <span class="n">name</span> <span class="ow">in</span> <span class="n">TILT_COLUMNS</span><span class="p">:</span>
+                <span class="n">table</span><span class="p">[</span><span class="n">name</span><span class="p">]</span> <span class="o">=</span> <span class="n">previous_table</span><span class="p">[</span><span class="n">name</span><span class="p">]</span>
+        <span class="n">prior</span> <span class="o">=</span> <span class="n">_tilt_prior_from_coeffs</span><span class="p">(</span>
+            <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"tilt_surface_coeffs"</span><span class="p">),</span> <span class="n">spec_order</span><span class="p">,</span> <span class="n">spat_order</span>
+        <span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">prior</span> <span class="o">=</span> <span class="kc">None</span>
+
+    <span class="n">indices</span> <span class="o">=</span> <span class="p">[</span><span class="n">target_index</span><span class="p">]</span> <span class="k">if</span> <span class="n">regen</span> <span class="k">else</span> <span class="nb">list</span><span class="p">(</span><span class="nb">range</span><span class="p">(</span><span class="n">FIRE_NORDERS</span><span class="p">))</span>
+    <span class="n">fits</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">TiltFit</span> <span class="o">|</span> <span class="kc">None</span><span class="p">]</span> <span class="o">=</span> <span class="p">[</span><span class="kc">None</span><span class="p">]</span> <span class="o">*</span> <span class="n">FIRE_NORDERS</span>
+    <span class="n">measurement_records</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">float</span><span class="p">,</span> <span class="nb">float</span><span class="p">,</span> <span class="nb">float</span><span class="p">,</span> <span class="nb">float</span><span class="p">]]</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="n">pooled_spec</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="n">pooled_dspat</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="n">pooled_delta</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="n">masked_orders</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
+
+    <span class="k">for</span> <span class="n">index</span> <span class="ow">in</span> <span class="n">indices</span><span class="p">:</span>
+        <span class="n">order</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">FIRE_ORDER_NUMBERS</span><span class="p">[</span><span class="n">index</span><span class="p">])</span>
+        <span class="k">if</span> <span class="p">(</span>
+            <span class="ow">not</span> <span class="n">np</span><span class="o">.</span><span class="n">all</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">spectra</span><span class="p">[:,</span> <span class="n">index</span><span class="p">]))</span>
+            <span class="ow">or</span> <span class="ow">not</span> <span class="n">np</span><span class="o">.</span><span class="n">any</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">centers</span><span class="p">[:,</span> <span class="n">index</span><span class="p">]))</span>
+        <span class="p">):</span>
+            <span class="n">table</span><span class="p">[</span><span class="s2">"masked"</span><span class="p">][</span><span class="n">index</span><span class="p">]</span> <span class="o">=</span> <span class="kc">True</span>
+            <span class="n">masked_orders</span><span class="p">[</span><span class="n">order</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"no arc spectrum"</span>
+            <span class="k">continue</span>
+        <span class="n">detected</span> <span class="o">=</span> <span class="n">detect_lines</span><span class="p">(</span><span class="n">spectra</span><span class="p">[:,</span> <span class="n">index</span><span class="p">],</span> <span class="n">sigdetect</span><span class="o">=</span><span class="n">sigdetect</span><span class="p">,</span> <span class="n">fwhm</span><span class="o">=</span><span class="n">fwhm</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">detected</span><span class="o">.</span><span class="n">tcent</span><span class="o">.</span><span class="n">size</span> <span class="o">&lt;</span> <span class="mi">3</span><span class="p">:</span>
+            <span class="n">table</span><span class="p">[</span><span class="s2">"masked"</span><span class="p">][</span><span class="n">index</span><span class="p">]</span> <span class="o">=</span> <span class="kc">True</span>
+            <span class="n">masked_orders</span><span class="p">[</span><span class="n">order</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"too few arc lines for tilts"</span>
+            <span class="k">continue</span>
+        <span class="n">center_spat</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">nanmedian</span><span class="p">(</span><span class="n">centers</span><span class="p">[:,</span> <span class="n">index</span><span class="p">]))</span>
+        <span class="n">half_width</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="mf">2.0</span><span class="p">,</span> <span class="nb">float</span><span class="p">(</span><span class="n">widths</span><span class="p">[</span><span class="n">index</span><span class="p">])</span> <span class="o">-</span> <span class="mf">2.0</span><span class="p">)</span>
+        <span class="n">measurements</span> <span class="o">=</span> <span class="n">trace_tilts</span><span class="p">(</span>
+            <span class="n">arcimg</span><span class="p">,</span>
+            <span class="n">detected</span><span class="o">.</span><span class="n">tcent</span><span class="p">,</span>
+            <span class="n">center_spat</span><span class="p">,</span>
+            <span class="n">half_width</span><span class="o">=</span><span class="n">half_width</span><span class="p">,</span>
+            <span class="n">fwhm</span><span class="o">=</span><span class="n">fwhm</span><span class="p">,</span>
+            <span class="n">maxshift</span><span class="o">=</span><span class="n">maxshift</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="k">if</span> <span class="n">measurements</span><span class="o">.</span><span class="n">npoints</span> <span class="o">&lt;</span> <span class="mi">4</span><span class="p">:</span>
+            <span class="n">table</span><span class="p">[</span><span class="s2">"masked"</span><span class="p">][</span><span class="n">index</span><span class="p">]</span> <span class="o">=</span> <span class="kc">True</span>
+            <span class="n">masked_orders</span><span class="p">[</span><span class="n">order</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"tilt tracing failed"</span>
+            <span class="k">continue</span>
+        <span class="k">if</span> <span class="n">regen</span><span class="p">:</span>
+            <span class="n">fit</span> <span class="o">=</span> <span class="n">regularize_tilt_fit</span><span class="p">(</span>
+                <span class="n">measurements</span><span class="p">,</span>
+                <span class="n">prior</span><span class="p">,</span>
+                <span class="n">nspec</span><span class="o">=</span><span class="n">nspec</span><span class="p">,</span>
+                <span class="n">spat_scale</span><span class="o">=</span><span class="n">spat_scale</span><span class="p">,</span>
+                <span class="n">spec_order</span><span class="o">=</span><span class="n">spec_order</span><span class="p">,</span>
+                <span class="n">spat_order</span><span class="o">=</span><span class="n">spat_order</span><span class="p">,</span>
+            <span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">fit</span> <span class="o">=</span> <span class="n">fit_tilt_surface</span><span class="p">(</span>
+                <span class="n">measurements</span><span class="p">,</span>
+                <span class="n">nspec</span><span class="o">=</span><span class="n">nspec</span><span class="p">,</span>
+                <span class="n">spat_scale</span><span class="o">=</span><span class="n">spat_scale</span><span class="p">,</span>
+                <span class="n">spec_order</span><span class="o">=</span><span class="n">spec_order</span><span class="p">,</span>
+                <span class="n">spat_order</span><span class="o">=</span><span class="n">spat_order</span><span class="p">,</span>
+            <span class="p">)</span>
+            <span class="n">pooled_spec</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span><span class="n">measurements</span><span class="o">.</span><span class="n">spec_pixel</span><span class="o">.</span><span class="n">tolist</span><span class="p">())</span>
+            <span class="n">pooled_dspat</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span><span class="n">measurements</span><span class="o">.</span><span class="n">dspat</span><span class="o">.</span><span class="n">tolist</span><span class="p">())</span>
+            <span class="n">pooled_delta</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span><span class="n">measurements</span><span class="o">.</span><span class="n">delta</span><span class="o">.</span><span class="n">tolist</span><span class="p">())</span>
+        <span class="n">poly</span> <span class="o">=</span> <span class="n">build_tilt_fit</span><span class="p">(</span><span class="n">fit</span><span class="p">)</span>
+        <span class="n">model</span> <span class="o">=</span> <span class="n">poly</span><span class="o">.</span><span class="n">evaluate</span><span class="p">(</span>
+            <span class="p">[</span><span class="n">measurements</span><span class="o">.</span><span class="n">spec_pixel</span> <span class="o">/</span> <span class="n">fit</span><span class="o">.</span><span class="n">spec_scale</span><span class="p">,</span> <span class="n">measurements</span><span class="o">.</span><span class="n">dspat</span> <span class="o">/</span> <span class="n">fit</span><span class="o">.</span><span class="n">spat_scale</span><span class="p">]</span>
+        <span class="p">)</span> <span class="o">*</span> <span class="n">fit</span><span class="o">.</span><span class="n">spec_scale</span>
+        <span class="n">measurement_records</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span>
+            <span class="p">(</span><span class="n">order</span><span class="p">,</span> <span class="nb">float</span><span class="p">(</span><span class="n">s</span><span class="p">),</span> <span class="nb">float</span><span class="p">(</span><span class="n">d</span><span class="p">),</span> <span class="nb">float</span><span class="p">(</span><span class="n">dl</span><span class="p">),</span> <span class="nb">float</span><span class="p">(</span><span class="n">m</span><span class="p">))</span>
+            <span class="k">for</span> <span class="n">s</span><span class="p">,</span> <span class="n">d</span><span class="p">,</span> <span class="n">dl</span><span class="p">,</span> <span class="n">m</span> <span class="ow">in</span> <span class="nb">zip</span><span class="p">(</span>
+                <span class="n">measurements</span><span class="o">.</span><span class="n">spec_pixel</span><span class="p">,</span>
+                <span class="n">measurements</span><span class="o">.</span><span class="n">dspat</span><span class="p">,</span>
+                <span class="n">measurements</span><span class="o">.</span><span class="n">delta</span><span class="p">,</span>
+                <span class="n">model</span><span class="p">,</span>
+            <span class="p">)</span>
+        <span class="p">)</span>
+        <span class="n">fits</span><span class="p">[</span><span class="n">index</span><span class="p">]</span> <span class="o">=</span> <span class="n">fit</span>
+        <span class="n">tilt_coeffs</span><span class="p">[</span><span class="n">index</span><span class="p">]</span> <span class="o">=</span> <span class="n">fit</span><span class="o">.</span><span class="n">coeffs</span>
+        <span class="n">_write_tilt_row</span><span class="p">(</span><span class="n">table</span><span class="p">,</span> <span class="n">index</span><span class="p">,</span> <span class="n">fit</span><span class="p">)</span>
+
+    <span class="k">if</span> <span class="n">regen</span><span class="p">:</span>
+        <span class="n">global_coeffs</span> <span class="o">=</span> <span class="n">products</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"tilt_surface_coeffs"</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">global_coeffs</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">global_coeffs</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">full</span><span class="p">(</span><span class="n">nterms</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">nan</span><span class="p">)</span>
+        <span class="n">global_coeffs</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">global_coeffs</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">global_fit</span> <span class="o">=</span> <span class="n">fit_global_tilt_surface</span><span class="p">(</span>
+            <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">pooled_spec</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">),</span>
+            <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">pooled_dspat</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">),</span>
+            <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">pooled_delta</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">),</span>
+            <span class="n">nspec</span><span class="o">=</span><span class="n">nspec</span><span class="p">,</span>
+            <span class="n">spat_scale</span><span class="o">=</span><span class="n">spat_scale</span><span class="p">,</span>
+            <span class="n">spec_order</span><span class="o">=</span><span class="n">spec_order</span><span class="p">,</span>
+            <span class="n">spat_order</span><span class="o">=</span><span class="n">spat_order</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="n">global_coeffs</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">global_fit</span><span class="o">.</span><span class="n">coeffs</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+
+    <span class="n">measurements_table</span> <span class="o">=</span> <span class="n">Table</span><span class="p">(</span>
+        <span class="p">{</span>
+            <span class="s2">"order"</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">([</span><span class="n">r</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="k">for</span> <span class="n">r</span> <span class="ow">in</span> <span class="n">measurement_records</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">int16</span><span class="p">),</span>
+            <span class="s2">"spec_pixel"</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">([</span><span class="n">r</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="k">for</span> <span class="n">r</span> <span class="ow">in</span> <span class="n">measurement_records</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float64</span><span class="p">),</span>
+            <span class="s2">"dspat"</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">([</span><span class="n">r</span><span class="p">[</span><span class="mi">2</span><span class="p">]</span> <span class="k">for</span> <span class="n">r</span> <span class="ow">in</span> <span class="n">measurement_records</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float64</span><span class="p">),</span>
+            <span class="s2">"delta"</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">([</span><span class="n">r</span><span class="p">[</span><span class="mi">3</span><span class="p">]</span> <span class="k">for</span> <span class="n">r</span> <span class="ow">in</span> <span class="n">measurement_records</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float64</span><span class="p">),</span>
+            <span class="s2">"model"</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">([</span><span class="n">r</span><span class="p">[</span><span class="mi">4</span><span class="p">]</span> <span class="k">for</span> <span class="n">r</span> <span class="ow">in</span> <span class="n">measurement_records</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float64</span><span class="p">),</span>
+        <span class="p">},</span>
+        <span class="n">names</span><span class="o">=</span><span class="p">(</span><span class="s2">"order"</span><span class="p">,</span> <span class="s2">"spec_pixel"</span><span class="p">,</span> <span class="s2">"dspat"</span><span class="p">,</span> <span class="s2">"delta"</span><span class="p">,</span> <span class="s2">"model"</span><span class="p">),</span>
+    <span class="p">)</span>
+
+    <span class="n">residuals</span> <span class="o">=</span> <span class="n">_tilt_residual_figure</span><span class="p">(</span><span class="n">measurements_table</span><span class="p">,</span> <span class="n">fits</span><span class="p">)</span>
+    <span class="n">tilt_map</span> <span class="o">=</span> <span class="n">_tilt_map_figure</span><span class="p">(</span><span class="n">arcimg</span><span class="p">,</span> <span class="n">fits</span><span class="p">,</span> <span class="n">spat_scale</span><span class="p">)</span>
+
+    <span class="n">n_masked</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">table</span><span class="p">[</span><span class="s2">"masked"</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">bool</span><span class="p">)</span><span class="o">.</span><span class="n">sum</span><span class="p">())</span>
+    <span class="k">return</span> <span class="n">StepResult</span><span class="p">(</span>
+        <span class="n">products</span><span class="o">=</span><span class="p">{</span>
+            <span class="s2">"tilts"</span><span class="p">:</span> <span class="n">table</span><span class="p">,</span>
+            <span class="s2">"tilt_coeffs"</span><span class="p">:</span> <span class="n">tilt_coeffs</span><span class="p">,</span>
+            <span class="s2">"tilt_surface_coeffs"</span><span class="p">:</span> <span class="n">global_coeffs</span><span class="p">,</span>
+            <span class="s2">"tilt_measurements"</span><span class="p">:</span> <span class="n">measurements_table</span><span class="p">,</span>
+        <span class="p">},</span>
+        <span class="n">meta</span><span class="o">=</span><span class="p">{</span>
+            <span class="s2">"tilt_spec_order"</span><span class="p">:</span> <span class="n">spec_order</span><span class="p">,</span>
+            <span class="s2">"tilt_spat_order"</span><span class="p">:</span> <span class="n">spat_order</span><span class="p">,</span>
+            <span class="s2">"tilt_spat_scale"</span><span class="p">:</span> <span class="n">spat_scale</span><span class="p">,</span>
+            <span class="s2">"n_orders_tilted"</span><span class="p">:</span> <span class="nb">int</span><span class="p">(</span><span class="n">FIRE_NORDERS</span> <span class="o">-</span> <span class="n">n_masked</span><span class="p">),</span>
+            <span class="s2">"n_orders_masked"</span><span class="p">:</span> <span class="n">n_masked</span><span class="p">,</span>
+        <span class="p">},</span>
+        <span class="n">plots</span><span class="o">=</span><span class="p">{</span><span class="s2">"tilt_residuals"</span><span class="p">:</span> <span class="n">residuals</span><span class="p">,</span> <span class="s2">"tilt_map"</span><span class="p">:</span> <span class="n">tilt_map</span><span class="p">},</span>
+        <span class="n">masked_orders</span><span class="o">=</span><span class="n">masked_orders</span><span class="p">,</span>
+    <span class="p">)</span>
+</pre></div>
+</div>
+<p>The pure algorithms in <code>onfire/core/tilts.py</code>:</p>
+<div class="code-ref"><div class="code-label">onfire/core/tilts.py:81</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">trace_line_tilt</span><span class="p">(</span>
+    <span class="n">arcimg</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">line_spec</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
+    <span class="n">center_spat</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">half_width</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
+    <span class="n">maxshift</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">3.0</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""Trace one arc line's spectral position across the order.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        arcimg: 2D arc image with shape ``(nspec, nspat)``.</span>
+<span class="sd">        line_spec: Spectral pixel position of the line at the order centre.</span>
+<span class="sd">        center_spat: Spatial pixel position of the order centre.</span>
+<span class="sd">        half_width: Half-width of the spatial trace window, in pixels.</span>
+<span class="sd">        maxshift: Maximum spectral shift between adjacent spatial samples.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        ``(dspat, positions)`` arrays of spatial offsets and the measured</span>
+<span class="sd">        spectral positions.</span>
+<span class="sd">    """</span>
+    <span class="n">arcimg</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">arcimg</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">nspat</span> <span class="o">=</span> <span class="n">arcimg</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span>
+    <span class="n">center</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="nb">round</span><span class="p">(</span><span class="n">center_spat</span><span class="p">))</span>
+    <span class="n">lo_spat</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="nb">int</span><span class="p">(</span><span class="n">center_spat</span> <span class="o">-</span> <span class="n">half_width</span><span class="p">))</span>
+    <span class="n">hi_spat</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="n">nspat</span><span class="p">,</span> <span class="nb">int</span><span class="p">(</span><span class="n">center_spat</span> <span class="o">+</span> <span class="n">half_width</span><span class="p">)</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span>
+
+    <span class="n">dspat</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="n">positions</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="n">guess</span> <span class="o">=</span> <span class="n">line_spec</span>
+    <span class="k">for</span> <span class="n">column</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">center</span><span class="p">,</span> <span class="n">hi_spat</span><span class="p">):</span>
+        <span class="n">guess</span> <span class="o">=</span> <span class="n">_centroid</span><span class="p">(</span><span class="n">arcimg</span><span class="p">[:,</span> <span class="n">column</span><span class="p">],</span> <span class="n">guess</span><span class="p">,</span> <span class="n">maxshift</span><span class="p">)</span>
+        <span class="n">dspat</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">column</span> <span class="o">-</span> <span class="n">center_spat</span><span class="p">)</span>
+        <span class="n">positions</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">guess</span><span class="p">)</span>
+    <span class="n">guess</span> <span class="o">=</span> <span class="n">line_spec</span>
+    <span class="k">for</span> <span class="n">column</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">center</span> <span class="o">-</span> <span class="mi">1</span><span class="p">,</span> <span class="n">lo_spat</span> <span class="o">-</span> <span class="mi">1</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">):</span>
+        <span class="n">guess</span> <span class="o">=</span> <span class="n">_centroid</span><span class="p">(</span><span class="n">arcimg</span><span class="p">[:,</span> <span class="n">column</span><span class="p">],</span> <span class="n">guess</span><span class="p">,</span> <span class="n">maxshift</span><span class="p">)</span>
+        <span class="n">dspat</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">column</span> <span class="o">-</span> <span class="n">center_spat</span><span class="p">)</span>
+        <span class="n">positions</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">guess</span><span class="p">)</span>
+
+    <span class="n">order</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">argsort</span><span class="p">(</span><span class="n">dspat</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">dspat</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)[</span><span class="n">order</span><span class="p">],</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">positions</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)[</span><span class="n">order</span><span class="p">]</span>
+</pre></div>
+</div>
+<div class="code-ref"><div class="code-label">onfire/core/tilts.py:182</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">fit_tilt_surface</span><span class="p">(</span>
+    <span class="n">measurements</span><span class="p">:</span> <span class="n">TiltMeasurements</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">nspec</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="n">spat_scale</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
+    <span class="n">spec_order</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">3</span><span class="p">,</span>
+    <span class="n">spat_order</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">4</span><span class="p">,</span>
+    <span class="n">sigrej</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">3.0</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">TiltFit</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Fit the 2D spectral-offset surface for one order.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        measurements: Traced tilt measurements.</span>
+<span class="sd">        nspec: Number of detector pixels along dispersion.</span>
+<span class="sd">        spat_scale: Spatial normalization scale (order half-width).</span>
+<span class="sd">        spec_order: Polynomial order along the spectral axis.</span>
+<span class="sd">        spat_order: Polynomial order along the spatial axis.</span>
+<span class="sd">        sigrej: Rejection threshold in robust sigma.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        The fitted :class:`TiltFit`.</span>
+<span class="sd">    """</span>
+    <span class="n">xnspecmin1</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">nspec</span> <span class="o">-</span> <span class="mi">1</span><span class="p">))</span>
+    <span class="n">spat_scale</span> <span class="o">=</span> <span class="n">_spatial_scale</span><span class="p">(</span><span class="n">spat_scale</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">measurements</span><span class="o">.</span><span class="n">npoints</span> <span class="o">&lt;</span> <span class="mi">4</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">_masked_tilt</span><span class="p">(</span><span class="n">nspec</span><span class="p">,</span> <span class="n">spec_order</span><span class="p">,</span> <span class="n">spat_order</span><span class="p">,</span> <span class="n">spat_scale</span><span class="p">)</span>
+
+    <span class="n">spec_coord</span> <span class="o">=</span> <span class="n">measurements</span><span class="o">.</span><span class="n">spec_pixel</span> <span class="o">/</span> <span class="n">xnspecmin1</span>
+    <span class="n">spat_coord</span> <span class="o">=</span> <span class="n">measurements</span><span class="o">.</span><span class="n">dspat</span> <span class="o">/</span> <span class="n">spat_scale</span>
+    <span class="n">delta_norm</span> <span class="o">=</span> <span class="n">measurements</span><span class="o">.</span><span class="n">delta</span> <span class="o">/</span> <span class="n">xnspecmin1</span>
+    <span class="n">fit</span><span class="p">,</span> <span class="n">good</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">robust_legendre_fit</span><span class="p">(</span>
+        <span class="p">[</span><span class="n">spec_coord</span><span class="p">,</span> <span class="n">spat_coord</span><span class="p">],</span>
+        <span class="n">delta_norm</span><span class="p">,</span>
+        <span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">spec_order</span> <span class="o">-</span> <span class="mi">1</span><span class="p">),</span> <span class="nb">max</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">spat_order</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)),</span>
+        <span class="n">domains</span><span class="o">=</span><span class="p">[(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">),</span> <span class="p">(</span><span class="o">-</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">)],</span>
+        <span class="n">sigrej</span><span class="o">=</span><span class="n">sigrej</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">residual</span> <span class="o">=</span> <span class="p">(</span><span class="n">measurements</span><span class="o">.</span><span class="n">delta</span> <span class="o">-</span> <span class="n">xnspecmin1</span> <span class="o">*</span> <span class="n">fit</span><span class="o">.</span><span class="n">evaluate</span><span class="p">([</span><span class="n">spec_coord</span><span class="p">,</span> <span class="n">spat_coord</span><span class="p">]))[</span><span class="n">good</span><span class="p">]</span>
+    <span class="n">rms</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">sqrt</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">residual</span><span class="o">**</span><span class="mi">2</span><span class="p">)))</span> <span class="k">if</span> <span class="n">residual</span><span class="o">.</span><span class="n">size</span> <span class="k">else</span> <span class="nb">float</span><span class="p">(</span><span class="s2">"nan"</span><span class="p">)</span>
+    <span class="n">angle</span> <span class="o">=</span> <span class="n">tilt_angle</span><span class="p">(</span>
+        <span class="n">fit</span><span class="p">,</span> <span class="n">nspec</span><span class="o">=</span><span class="n">nspec</span><span class="p">,</span> <span class="n">spat_scale</span><span class="o">=</span><span class="n">spat_scale</span><span class="p">,</span> <span class="n">spec_norm</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span> <span class="n">spat_norm</span><span class="o">=</span><span class="mf">0.0</span>
+    <span class="p">)</span>
+    <span class="k">return</span> <span class="n">TiltFit</span><span class="p">(</span>
+        <span class="n">coeffs</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">fit</span><span class="o">.</span><span class="n">coeffs</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">),</span>
+        <span class="n">spec_order</span><span class="o">=</span><span class="n">spec_order</span><span class="p">,</span>
+        <span class="n">spat_order</span><span class="o">=</span><span class="n">spat_order</span><span class="p">,</span>
+        <span class="n">spec_scale</span><span class="o">=</span><span class="n">xnspecmin1</span><span class="p">,</span>
+        <span class="n">spat_scale</span><span class="o">=</span><span class="n">spat_scale</span><span class="p">,</span>
+        <span class="n">rms</span><span class="o">=</span><span class="n">rms</span><span class="p">,</span>
+        <span class="n">nlines</span><span class="o">=</span><span class="nb">int</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">unique</span><span class="p">(</span><span class="n">measurements</span><span class="o">.</span><span class="n">line_index</span><span class="p">)</span><span class="o">.</span><span class="n">size</span><span class="p">),</span>
+        <span class="n">tilt_angle</span><span class="o">=</span><span class="n">angle</span><span class="p">,</span>
+        <span class="n">masked</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+    <span class="p">)</span>
+</pre></div>
+</div>
+<div class="code-ref"><div class="code-label">onfire/core/tilts.py:312</div><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">regularize_tilt_fit</span><span class="p">(</span>
+    <span class="n">measurements</span><span class="p">:</span> <span class="n">TiltMeasurements</span><span class="p">,</span>
+    <span class="n">prior</span><span class="p">:</span> <span class="n">PolynomialFit</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">nspec</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="n">spat_scale</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
+    <span class="n">spec_order</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">3</span><span class="p">,</span>
+    <span class="n">spat_order</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">4</span><span class="p">,</span>
+    <span class="n">correction_order</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span>
+    <span class="n">sigrej</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">3.0</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">TiltFit</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Refine one order's tilt surface using a global cross-order prior.</span>
+
+<span class="sd">    A smooth low-order correction to the global surface is fit to the traced</span>
+<span class="sd">    residuals, so a faint or noisy order inherits the instrument distortion</span>
+<span class="sd">    rather than being dropped.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        measurements: Traced tilt measurements for the target order.</span>
+<span class="sd">        prior: Global tilt surface across all orders.</span>
+<span class="sd">        nspec: Number of detector pixels along dispersion.</span>
+<span class="sd">        spat_scale: Spatial normalization scale (order half-width).</span>
+<span class="sd">        spec_order: Stored spectral polynomial order.</span>
+<span class="sd">        spat_order: Stored spatial polynomial order.</span>
+<span class="sd">        correction_order: Polynomial order of the correction surface.</span>
+<span class="sd">        sigrej: Rejection threshold in robust sigma.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        The regularized :class:`TiltFit`.</span>
+<span class="sd">    """</span>
+    <span class="n">xnspecmin1</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">nspec</span> <span class="o">-</span> <span class="mi">1</span><span class="p">))</span>
+    <span class="n">spat_scale</span> <span class="o">=</span> <span class="n">_spatial_scale</span><span class="p">(</span><span class="n">spat_scale</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">measurements</span><span class="o">.</span><span class="n">npoints</span> <span class="o">&lt;</span> <span class="mi">4</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">_tilt_from_prior</span><span class="p">(</span><span class="n">prior</span><span class="p">,</span> <span class="n">nspec</span><span class="p">,</span> <span class="n">spec_order</span><span class="p">,</span> <span class="n">spat_order</span><span class="p">,</span> <span class="n">spat_scale</span><span class="p">)</span>
+
+    <span class="n">spec_coord</span> <span class="o">=</span> <span class="n">measurements</span><span class="o">.</span><span class="n">spec_pixel</span> <span class="o">/</span> <span class="n">xnspecmin1</span>
+    <span class="n">spat_coord</span> <span class="o">=</span> <span class="n">measurements</span><span class="o">.</span><span class="n">dspat</span> <span class="o">/</span> <span class="n">spat_scale</span>
+    <span class="n">delta_norm</span> <span class="o">=</span> <span class="n">measurements</span><span class="o">.</span><span class="n">delta</span> <span class="o">/</span> <span class="n">xnspecmin1</span>
+    <span class="n">prior_delta</span> <span class="o">=</span> <span class="n">prior</span><span class="o">.</span><span class="n">evaluate</span><span class="p">([</span><span class="n">spec_coord</span><span class="p">,</span> <span class="n">spat_coord</span><span class="p">])</span>
+    <span class="n">correction</span><span class="p">,</span> <span class="n">_</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">robust_legendre_fit</span><span class="p">(</span>
+        <span class="p">[</span><span class="n">spec_coord</span><span class="p">,</span> <span class="n">spat_coord</span><span class="p">],</span>
+        <span class="n">delta_norm</span> <span class="o">-</span> <span class="n">prior_delta</span><span class="p">,</span>
+        <span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">correction_order</span> <span class="o">-</span> <span class="mi">1</span><span class="p">),</span> <span class="nb">max</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">correction_order</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)),</span>
+        <span class="n">domains</span><span class="o">=</span><span class="p">[(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">),</span> <span class="p">(</span><span class="o">-</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">)],</span>
+        <span class="n">sigrej</span><span class="o">=</span><span class="n">sigrej</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">model</span> <span class="o">=</span> <span class="n">_combine_surface</span><span class="p">(</span><span class="n">prior</span><span class="p">,</span> <span class="n">correction</span><span class="p">)</span>
+    <span class="n">residual</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="n">measurements</span><span class="o">.</span><span class="n">delta</span>
+        <span class="o">-</span> <span class="n">xnspecmin1</span> <span class="o">*</span> <span class="n">model</span><span class="o">.</span><span class="n">evaluate</span><span class="p">([</span><span class="n">spec_coord</span><span class="p">,</span> <span class="n">spat_coord</span><span class="p">])</span>
+    <span class="p">)</span>
+    <span class="n">rms</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">sqrt</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">residual</span><span class="o">**</span><span class="mi">2</span><span class="p">)))</span> <span class="k">if</span> <span class="n">residual</span><span class="o">.</span><span class="n">size</span> <span class="k">else</span> <span class="nb">float</span><span class="p">(</span><span class="s2">"nan"</span><span class="p">)</span>
+    <span class="n">angle</span> <span class="o">=</span> <span class="n">tilt_angle</span><span class="p">(</span>
+        <span class="n">model</span><span class="p">,</span> <span class="n">nspec</span><span class="o">=</span><span class="n">nspec</span><span class="p">,</span> <span class="n">spat_scale</span><span class="o">=</span><span class="n">spat_scale</span><span class="p">,</span> <span class="n">spec_norm</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span> <span class="n">spat_norm</span><span class="o">=</span><span class="mf">0.0</span>
+    <span class="p">)</span>
+    <span class="k">return</span> <span class="n">TiltFit</span><span class="p">(</span>
+        <span class="n">coeffs</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">model</span><span class="o">.</span><span class="n">coeffs</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">),</span>
+        <span class="n">spec_order</span><span class="o">=</span><span class="n">spec_order</span><span class="p">,</span>
+        <span class="n">spat_order</span><span class="o">=</span><span class="n">spat_order</span><span class="p">,</span>
+        <span class="n">spec_scale</span><span class="o">=</span><span class="n">xnspecmin1</span><span class="p">,</span>
+        <span class="n">spat_scale</span><span class="o">=</span><span class="n">spat_scale</span><span class="p">,</span>
+        <span class="n">rms</span><span class="o">=</span><span class="n">rms</span><span class="p">,</span>
+        <span class="n">nlines</span><span class="o">=</span><span class="nb">int</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">unique</span><span class="p">(</span><span class="n">measurements</span><span class="o">.</span><span class="n">line_index</span><span class="p">)</span><span class="o">.</span><span class="n">size</span><span class="p">),</span>
+        <span class="n">tilt_angle</span><span class="o">=</span><span class="n">angle</span><span class="p">,</span>
+        <span class="n">masked</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+    <span class="p">)</span>
+</pre></div>
+</div></details>
+</main>
+<script defer src="static/katex/katex.min.js"></script>
+<script defer src="static/katex/auto-render.min.js"></script>
+<script defer src="static/guide.js"></script>
+</body>
+</html>

@@ -281,3 +281,26 @@ def test_committed_site_matches_a_fresh_build(tmp_path):
     fresh = {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     committed = {p.relative_to(SITE): p.read_bytes() for p in SITE.rglob("*") if p.is_file()}
     assert committed == fresh, "docs/site is stale; run `python docs/build.py`"
+
+
+def test_every_reduction_step_has_a_guide_page():
+    from onfire.pipeline.steps import STEP_SEQUENCE
+
+    missing = [step for step in STEP_SEQUENCE if not (GUIDE / f"{step}.md").is_file()]
+
+    assert not missing
+
+
+def test_step_parameters_shown_in_the_guide_are_read_by_the_engines():
+    import yaml
+
+    engines = (REPO / "onfire" / "core" / "engines.py").read_text()
+    problems = []
+    for name, text in _guide_text().items():
+        for block in re.findall(r"```yaml\n(.*?)```", text, re.S):
+            steps = (yaml.safe_load(block) or {}).get("steps", {})
+            for step, params in steps.items():
+                for key in params or {}:
+                    if f'"{key}"' not in engines and f"'{key}'" not in engines:
+                        problems.append(f"{name}: steps.{step}.{key}")
+    assert not problems
